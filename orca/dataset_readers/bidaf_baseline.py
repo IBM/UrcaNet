@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
 @DatasetReader.register("bidaf_baseline")
-class ShARCBiDAFReader(DatasetReader):
+class BiDAFBaselineReader(DatasetReader):
     """
     Reads a JSON-formatted ShARC file and returns a ``Dataset`` where the ``Instances`` have four
     fields: ``question`` a ``TextField``, which in our case is q || f1 ? a1 || ... || fm ? am,
@@ -90,8 +90,10 @@ class ShARCBiDAFReader(DatasetReader):
             rule_text = utterance['snippet']
             question = utterance['question']
             scenario = utterance['scenario']
-            history = utterance['history']                
-            
+            history = utterance['history']
+
+            if scenario is not '':
+                continue
             if 'answer' in utterance.keys():
                 answer = utterance['answer']
                 if answer in ['Yes', 'No', 'Irrelevant']:
@@ -158,7 +160,11 @@ class ShARCBiDAFReader(DatasetReader):
             #TODO: change rule_text if there is passage length limit
             token_span = self.find_answer_span(rule_text, answer)
             if token_span is None:
+                if self.skip_invalid_examples:
                     return None
+                else:
+                    passage_tokens_len = len(passage_tokens)
+                    token_span = (max(passage_tokens_len - self.min_span_length, 0), passage_tokens_len - 1) 
 
             fields['span_start'] = IndexField(token_span[0], passage_field)
             fields['span_end'] = IndexField(token_span[1], passage_field)
