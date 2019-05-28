@@ -101,13 +101,15 @@ class BiDAFCopyNetDatasetReader(DatasetReader):
 
     def __init__(self,
                  target_namespace: str,
+                 bidaf_input_tokenizer: Tokenizer = None,
+                 bidaf_token_indexers: Dict[str, TokenIndexer] = None,
                  source_tokenizer: Tokenizer = None,
                  target_tokenizer: Tokenizer = None,
                  source_token_indexers: Dict[str, TokenIndexer] = None,
                  lazy: bool = False) -> None:
         super().__init__(lazy)
-        self._tokenizer = WordTokenizer() # for BiDAF
-        self._token_indexers = {'tokens': SingleIdTokenIndexer()} # for BiDAF 
+        self._bidaf_tokenizer = bidaf_input_tokenizer or WordTokenizer()
+        self._bidaf_token_indexers = bidaf_token_indexers or {'tokens': SingleIdTokenIndexer()} 
         self._target_namespace = target_namespace
         self._source_tokenizer = source_tokenizer or WordTokenizer()
         self._target_tokenizer = target_tokenizer or self._source_tokenizer
@@ -189,12 +191,9 @@ class BiDAFCopyNetDatasetReader(DatasetReader):
 
         # For CopyNet Model
         source_string = rule_text
-        source_string += ' @@||@@ ' + question
-        for follow_up_qna in history:
-            source_string += ' @@||@@ '
-            source_string += follow_up_qna['follow_up_question']
-            source_string += ' @@?@@ '
-            source_string += follow_up_qna['follow_up_answer']
+        if history:
+            last_follow_up_question = history[-1]['follow_up_question']
+            source_string += ' @@||@@ ' + last_follow_up_question
         target_string = answer
     
         # pylint: disable=arguments-differ
@@ -222,11 +221,11 @@ class BiDAFCopyNetDatasetReader(DatasetReader):
             question_text += ' @@?@@ '
             question_text += follow_up_qna['follow_up_answer']
         
-        passage_tokens = self._tokenizer.tokenize(passage_text)
-        question_tokens = self._tokenizer.tokenize(question_text)
+        passage_tokens = self._bidaf_tokenizer.tokenize(passage_text)
+        question_tokens = self._bidaf_tokenizer.tokenize(question_text)
 
-        fields_dict['passage'] = TextField(passage_tokens, self._token_indexers)
-        fields_dict['question'] = TextField(question_tokens, self._token_indexers)
+        fields_dict['passage'] = TextField(passage_tokens, self._bidaf_token_indexers)
+        fields_dict['question'] = TextField(question_tokens, self._bidaf_token_indexers)
 
         if target_string is not None:
             tokenized_target = self._target_tokenizer.tokenize(target_string)

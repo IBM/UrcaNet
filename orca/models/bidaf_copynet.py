@@ -4,6 +4,7 @@ from typing import Dict, Tuple, List, Any, Union
 import numpy
 from overrides import overrides
 import torch
+from torch.nn.functional import relu
 from torch.nn.modules.linear import Linear
 from torch.nn.modules.rnn import LSTMCell
 
@@ -17,6 +18,7 @@ from allennlp.nn import InitializerApplicator, util
 from allennlp.training.metrics import Metric, BLEU
 from allennlp.nn.beam_search import BeamSearch
 
+from .bidaf_trimmed import BidirectionalAttentionFlowTrimmed
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -76,6 +78,7 @@ class BiDAFCopyNetSeq2Seq(Model):
 
     def __init__(self,
                  vocab: Vocabulary,
+                 bidaf_model: BidirectionalAttentionFlowTrimmed,
                  source_embedder: TextFieldEmbedder,
                  encoder: Seq2SeqEncoder,
                  attention: Attention,
@@ -87,13 +90,11 @@ class BiDAFCopyNetSeq2Seq(Model):
                  target_namespace: str = "target_tokens",
                  tensor_based_metric: Metric = None,
                  token_based_metric: Metric = None,
-                 initializer: InitializerApplicator = InitializerApplicator()) -> None:
+                 initializer: InitializerApplicator = InitializerApplicator(),
+                 dropout: float = 0.0) -> None:
         super().__init__(vocab)
 
-        self.bidaf_model, _ = load_archive('./temp/bidaf_baseline/model.tar.gz')
-        for param in self.bidaf_model.parameters():
-            param.requires_grad = False
-
+        self.bidaf_model = bidaf_model
         self._source_namespace = source_namespace
         self._target_namespace = target_namespace
         self._src_start_index = self.vocab.get_token_index(START_SYMBOL, self._source_namespace)
@@ -121,8 +122,10 @@ class BiDAFCopyNetSeq2Seq(Model):
         self.decoder_output_dim = self.encoder_output_dim
         self.decoder_input_dim = self.decoder_output_dim
 
-        # Layer to project span logits down
-        self._decoder_init_projection = Linear(400, self.decoder_output_dim)
+        # Layer to project modeled passage down
+        modeling_dim = self.bidaf_model._modeling_layer.get_output_dim()
+        self._bidaf_output_projection = Linear(modeling_dim, 1)
+        self.max_passage_length = 200
 
         target_vocab_size = self.vocab.get_vocab_size(self._target_namespace)
 
@@ -136,7 +139,7 @@ class BiDAFCopyNetSeq2Seq(Model):
         self._target_embedder = Embedding(target_vocab_size, target_embedding_dim)
         self._attention = attention
         self._input_projection_layer = Linear(
-                target_embedding_dim + self.encoder_output_dim * 2,
+                target_embedding_dim + self.encoder_output_dim * 2 + self.decoder_output_dim,
                 self.decoder_input_dim)
 
         # We then run the projected decoder input through an LSTM cell to produce
@@ -155,6 +158,10 @@ class BiDAFCopyNetSeq2Seq(Model):
         # At prediction time, we'll use a beam search to find the best target sequence.
         self._beam_search = BeamSearch(self._end_index, max_steps=max_decoding_steps, beam_size=beam_size)
 
+        if dropout > 0:
+            self._dropout = torch.nn.Dropout(p=dropout)
+        else:
+            self._dropout = lambda x: x
         initializer(self)
 
     @overrides
@@ -204,8 +211,11 @@ class BiDAFCopyNetSeq2Seq(Model):
         state["source_to_target"] = source_to_target
 
         bidaf_output = self.bidaf_model(question, passage)
-        state['span_start_logits'] = bidaf_output['span_start_logits']
-        state['span_end_logits'] = bidaf_output['span_end_logits']
+        batch_size, passage_length, _ = bidaf_output['modeled_passage'].size()
+        bidaf_context = state["encoder_outputs"].new_zeros(batch_size, self.decoder_output_dim)
+        modeled_passage_proj = relu(self._bidaf_output_projection(bidaf_output['modeled_passage'])).squeeze(2) # shape: (batch_size, passage_length)
+        bidaf_context[:, :min(passage_length, self.max_passage_length)] = modeled_passage_proj[:, :self.max_passage_length]
+        state['bidaf_context'] = bidaf_context
 
         if target_tokens:
             state = self._init_decoder_state(state)
@@ -308,13 +318,6 @@ class BiDAFCopyNetSeq2Seq(Model):
         state["decoder_hidden"] = final_encoder_output
         # shape: (batch_size, decoder_output_dim)
         decoder_context = state["encoder_outputs"].new_zeros(batch_size, self.decoder_output_dim)
-        
-        _, passage_length = state['span_start_logits'].size()
-        span_logits = state["encoder_outputs"].new_zeros(batch_size, 400)
-        span_logits[:, :min(passage_length, 200)] = state['span_start_logits'][:, :200]
-        span_logits[:, 200:min(200 + passage_length, 400)] = state['span_end_logits'][:, :200]
-
-        decoder_context = self._decoder_init_projection(span_logits)
         state["decoder_context"] = decoder_context
 
         return state
@@ -328,7 +331,7 @@ class BiDAFCopyNetSeq2Seq(Model):
         # shape: (batch_size, max_input_sequence_length)
         source_mask = util.get_text_field_mask(source_tokens)
         # shape: (batch_size, max_input_sequence_length, encoder_output_dim)
-        encoder_outputs = self._encoder(embedded_input, source_mask)
+        encoder_outputs = self._dropout(self._encoder(embedded_input, source_mask))
         return {"source_mask": source_mask, "encoder_outputs": encoder_outputs}
 
     def _decoder_step(self,
@@ -346,8 +349,8 @@ class BiDAFCopyNetSeq2Seq(Model):
         attentive_read = util.weighted_sum(state["encoder_outputs"], attentive_weights)
         # shape: (group_size, encoder_output_dim)
         selective_read = util.weighted_sum(state["encoder_outputs"][:, 1:-1], selective_weights)
-        # shape: (group_size, target_embedding_dim + encoder_output_dim * 2)
-        decoder_input = torch.cat((embedded_input, attentive_read, selective_read), -1)
+        # shape: (group_size, target_embedding_dim + encoder_output_dim * 2 + decoder_output_dim)
+        decoder_input = torch.cat((embedded_input, attentive_read, selective_read, state['bidaf_context']), -1)
         # shape: (group_size, decoder_input_dim)
         projected_decoder_input = self._input_projection_layer(decoder_input)
 
