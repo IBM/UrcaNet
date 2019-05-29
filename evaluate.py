@@ -3,6 +3,7 @@ import sys
 
 from orca.dataset_readers.bidaf_baseline import BiDAFBaselineReader
 from orca.dataset_readers.bidaf_copynet import BiDAFCopyNetDatasetReader
+from orca.dataset_readers.bidaf_copynet_pipeline import BiDAFCopyNetPipelineDatasetReader
 from orca.dataset_readers.copynet_baseline import CopyNetBaselineDatasetReader
 from orca.models.bidaf_copynet import BiDAFCopyNetSeq2Seq
 from orca.predictors.sharc_predictor import ShARCPredictor
