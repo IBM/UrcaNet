@@ -191,8 +191,17 @@ class BiDAFCopyNetPipelineDatasetReader(DatasetReader):
 
         utterance = {'snippet': rule_text, 'question': question,\
                      'scenario': scenario, 'history': history}
-        result = self.predictor.predict_json(utterance)
-        source_string = rule_text + ' @@||@@ ' + result['best_span_str']
+        span = self.predictor.predict_json(utterance)['best_span_str']
+        span_size = len(span)
+        span_start_index = rule_text.find(span)
+        if span_start_index != -1:
+            source_string = ''
+            source_string += rule_text[:span_start_index] + '@@**@@ ' + span
+            source_string += ' @@**@@ ' + rule_text[span_start_index+span_size:]
+        else:
+            source_string = rule_text
+            print('Can\'t find span.')
+
         source_string += ' @@||@@ ' + question
         for follow_up_qna in history:
             source_string += ' @@||@@ '

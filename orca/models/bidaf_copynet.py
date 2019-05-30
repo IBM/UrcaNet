@@ -18,7 +18,7 @@ from allennlp.nn import InitializerApplicator, util
 from allennlp.training.metrics import Metric, BLEU
 from allennlp.nn.beam_search import BeamSearch
 
-from .bidaf_trimmed import BidirectionalAttentionFlowTrimmed
+from .bidaf_modified import BidirectionalAttentionFlowModified
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -78,7 +78,7 @@ class BiDAFCopyNetSeq2Seq(Model):
 
     def __init__(self,
                  vocab: Vocabulary,
-                 bidaf_model: BidirectionalAttentionFlowTrimmed,
+                 bidaf_model: BidirectionalAttentionFlowModified,
                  source_embedder: TextFieldEmbedder,
                  encoder: Seq2SeqEncoder,
                  attention: Attention,

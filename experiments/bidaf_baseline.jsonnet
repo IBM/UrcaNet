@@ -13,7 +13,7 @@
   "train_data_path": "sharc1-official/json/sharc_train.json",
   "validation_data_path": "sharc1-official/json/sharc_dev.json",
   "model": {
-    "type": "bidaf",
+    "type": "bidaf_modified",
     "text_field_embedder": {
       "token_embedders": {
         "tokens": {

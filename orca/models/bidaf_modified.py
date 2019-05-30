@@ -17,8 +17,8 @@ from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy, Squa
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
 
-@Model.register("bidaf_trimmed")
-class BidirectionalAttentionFlowTrimmed(Model):
+@Model.register("bidaf_modified")
+class BidirectionalAttentionFlowModified(Model):
     """
     This class implements Minjoon Seo's `Bidirectional Attention Flow model
     <https://www.semanticscholar.org/paper/Bidirectional-Attention-Flow-for-Machine-Seo-Kembhavi/7586b7cca1deba124af80609327395e613a20e9d>`_
@@ -75,7 +75,7 @@ class BidirectionalAttentionFlowTrimmed(Model):
                  mask_lstms: bool = True,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
-        super(BidirectionalAttentionFlowTrimmed, self).__init__(vocab, regularizer)
+        super(BidirectionalAttentionFlowModified, self).__init__(vocab, regularizer)
 
         self._text_field_embedder = text_field_embedder
         self._highway_layer = TimeDistributed(Highway(text_field_embedder.get_output_dim(),
@@ -170,10 +170,8 @@ class BidirectionalAttentionFlowTrimmed(Model):
             string from the original passage that the model thinks is the best answer to the
             question.
         """
-        # embedded_question = self._highway_layer(self._text_field_embedder(question))
-        # embedded_passage = self._highway_layer(self._text_field_embedder(passage))
-        embedded_question = self._text_field_embedder(question)
-        embedded_passage = self._text_field_embedder(passage)
+        embedded_question = self._highway_layer(self._text_field_embedder(question))
+        embedded_passage = self._highway_layer(self._text_field_embedder(passage))
         batch_size = embedded_question.size(0)
         passage_length = embedded_passage.size(1)
         question_mask = util.get_text_field_mask(question).float()
@@ -216,9 +214,46 @@ class BidirectionalAttentionFlowTrimmed(Model):
                                          dim=-1)
 
         modeled_passage = self._dropout(self._modeling_layer(final_merged_passage, passage_lstm_mask))
+        modeling_dim = modeled_passage.size(-1)
+
+        # Shape: (batch_size, passage_length, encoding_dim * 4 + modeling_dim))
+        span_start_input = self._dropout(torch.cat([final_merged_passage, modeled_passage], dim=-1))
+        # Shape: (batch_size, passage_length)
+        span_start_logits = self._span_start_predictor(span_start_input).squeeze(-1)
+        # Shape: (batch_size, passage_length)
+        span_start_probs = util.masked_softmax(span_start_logits, passage_mask)
+
+        # Shape: (batch_size, modeling_dim)
+        span_start_representation = util.weighted_sum(modeled_passage, span_start_probs)
+        # Shape: (batch_size, passage_length, modeling_dim)
+        tiled_start_representation = span_start_representation.unsqueeze(1).expand(batch_size,
+                                                                                   passage_length,
+                                                                                   modeling_dim)
+
+        # Shape: (batch_size, passage_length, encoding_dim * 4 + modeling_dim * 3)
+        span_end_representation = torch.cat([final_merged_passage,
+                                             modeled_passage,
+                                             tiled_start_representation,
+                                             modeled_passage * tiled_start_representation],
+                                            dim=-1)
+        # Shape: (batch_size, passage_length, encoding_dim)
+        encoded_span_end = self._dropout(self._span_end_encoder(span_end_representation,
+                                                                passage_lstm_mask))
+        # Shape: (batch_size, passage_length, encoding_dim * 4 + span_end_encoding_dim)
+        span_end_input = self._dropout(torch.cat([final_merged_passage, encoded_span_end], dim=-1))
+        span_end_logits = self._span_end_predictor(span_end_input).squeeze(-1)
+        span_end_probs = util.masked_softmax(span_end_logits, passage_mask)
+        span_start_logits = util.replace_masked_values(span_start_logits, passage_mask, -1e7)
+        span_end_logits = util.replace_masked_values(span_end_logits, passage_mask, -1e7)
+        best_span = get_best_span(span_start_logits, span_end_logits)
 
         output_dict = {
                 "passage_question_attention": passage_question_attention,
+                "span_start_logits": span_start_logits,
+                "span_start_probs": span_start_probs,
+                "span_end_logits": span_end_logits,
+                "span_end_probs": span_end_probs,
+                "best_span": best_span,
                 "modeled_passage": modeled_passage
                 }
 
