@@ -19,6 +19,7 @@
   "validation_data_path": "sharc1-official/json/sharc_dev.json",
   "model": {
     "type": "bidaf_copynet",
+    "pretrained_bidaf": false,
     "bidaf_model": {
       "text_field_embedder": {
         "token_embedders": {

@@ -9,6 +9,7 @@ from torch.nn.modules.linear import Linear
 from torch.nn.modules.rnn import LSTMCell
 
 from allennlp.common.util import START_SYMBOL, END_SYMBOL
+from allennlp.common import Params
 from allennlp.data.vocabulary import Vocabulary
 from allennlp.models.model import Model
 from allennlp.models.archival import load_archive
@@ -91,10 +92,19 @@ class BiDAFCopyNetSeq2Seq(Model):
                  tensor_based_metric: Metric = None,
                  token_based_metric: Metric = None,
                  initializer: InitializerApplicator = InitializerApplicator(),
-                 dropout: float = 0.0) -> None:
+                 dropout: float = 0.0,
+                 pretrained_bidaf: bool = False) -> None:
         super().__init__(vocab)
 
-        self.bidaf_model = bidaf_model
+        if pretrained_bidaf:
+            params = Params.from_file("./temp/bidaf_baseline/config.json")
+            vocab = Vocabulary.from_files("./temp/bidaf_baseline/vocabulary")
+            self.bidaf_model = Model.from_params(vocab=vocab, params=params.pop('model'))
+            map_location = None if torch.cuda.is_available() else 'cpu'
+            with open("./temp/bidaf_baseline/best.th", 'rb') as f:
+                self.bidaf_model.load_state_dict(torch.load(f, map_location=map_location))
+        else:
+            self.bidaf_model = bidaf_model
         self._source_namespace = source_namespace
         self._target_namespace = target_namespace
         self._src_start_index = self.vocab.get_token_index(START_SYMBOL, self._source_namespace)
