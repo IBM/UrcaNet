@@ -10,8 +10,8 @@
       }
     }
   },
-  "train_data_path": "sharc1-official/json/sharc_train.json",
-  "validation_data_path": "sharc1-official/json/sharc_dev.json",
+  "train_data_path": "sharc1-official/json/sharc_train_split.json",
+  "validation_data_path": "sharc1-official/json/sharc_val_split.json",
   "model": {
     "type": "bidaf_modified",
     "text_field_embedder": {
