@@ -1,29 +1,28 @@
+"""
+Usage: python evaluate.py <archived_model> <summary_file_name>
+"""
+
+
+from allennlp.models.archival import load_archive
+from allennlp.predictors import Predictor
 import json
+import pandas as pd
+from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix
+from tqdm import tqdm
 import sys
 
+import evaluator
 from orca.dataset_readers.bidaf_baseline import BiDAFBaselineReader
 from orca.dataset_readers.bidaf_copynet import BiDAFCopyNetDatasetReader
 from orca.dataset_readers.bidaf_copynet_pipeline import BiDAFCopyNetPipelineDatasetReader
 from orca.dataset_readers.copynet_baseline import CopyNetBaselineDatasetReader
+from orca.dataset_readers.bidaf_baseline_ft import BiDAFBaselineFTReader
+from orca.dataset_readers.bidaf_copynet_ft import BiDAFCopyNetFTDatasetReader
+from orca.models.bidaf_modified import BidirectionalAttentionFlowModified
 from orca.models.bidaf_copynet import BiDAFCopyNetSeq2Seq
+from orca.models.bidaf_ft import BidirectionalAttentionFlowFT
+from orca.models.bidaf_copynet_ft import BiDAFCopyNetFTSeq2Seq
 from orca.predictors.sharc_predictor import ShARCPredictor
-
-from allennlp.data.tokenizers.word_tokenizer import WordTokenizer
-from allennlp.models.archival import load_archive
-from allennlp.predictors import Predictor
-
-from nltk.translate.bleu_score import sentence_bleu
-
-archive = load_archive(sys.argv[1])
-predictor = Predictor.from_archive(archive, 'sharc_predictor')
-
-bleu_score_sum = [0, 0, 0, 0, 0]
-count = 0
-
-tokenizer = WordTokenizer()
-def tokenize(text):
-    tokens_list = tokenizer.tokenize(text)
-    return [token.text for token in tokens_list]
 
 def history_to_string(history):
     output = ''
@@ -36,42 +35,82 @@ def history_to_string(history):
         first_qa = False
     return output
 
-buffer = ''
-with open('./sharc1-official/json/sharc_dev.json', 'r') as dev_file:
-    dev_json = json.load(dev_file)
-    for utterance in dev_json:
-        answer = utterance['answer']
-        scenario = utterance['scenario']
-        if answer in ['Yes', 'No', 'Irrelevant'] or scenario is not '':
-            continue
+def get_prediction(predictor, utterance):
+    model_output = predictor.predict_json(utterance)
 
-        result = predictor.predict_json(utterance)
-        if 'best_span_str' in result.keys(): # BiDAF
-            predicted_answer = result['best_span_str']
-        elif 'prediction' in result.keys(): # CopyNet
-            predicted_answer = ' '.join(result['prediction'])
-        elif 'predicted_tokens' in result.keys(): # CopyNet Baseline
-            predicted_answer = ' '.join(result['predicted_tokens'][0])
-        else:
-            raise ValueError('Error')
+    predicted_action = model_output.get('label', None)
+    
+    if 'best_span_str' in model_output.keys(): # BiDAF
+        predicted_answer = model_output['best_span_str']
+    elif 'prediction' in model_output.keys(): # CopyNet
+        predicted_answer = ' '.join(model_output['prediction'])
+    elif 'predicted_tokens' in model_output.keys(): # CopyNet Baseline
+        predicted_answer = ' '.join(model_output['predicted_tokens'][0])
+    else:
+        raise ValueError('Can\'t get prediction.')
 
-        buffer += 'RULE TEXT: ' + utterance['snippet'] + '\n'
-        buffer += 'SCENARIO: ' + utterance['scenario'] + '\n'          
-        buffer += 'QUESTION: ' + utterance['question'] + '\n'
-        buffer += 'HISTORY: ' + history_to_string(utterance['history']) + '\n'
-        buffer += 'GOLD ANSWER: ' + answer + '\n'
-        buffer += 'PREDICTED ANSWER: ' + str(predicted_answer) + '\n\n\n'
+    if predicted_action and predicted_action != 'More':
+        predicted_answer = predicted_action
 
-        bleu_score_sum[1] += sentence_bleu([tokenize(predicted_answer)], tokenize(answer), weights=(1,))
-        bleu_score_sum[2] += sentence_bleu([tokenize(predicted_answer)], tokenize(answer), weights=(0.5, 0.5))
-        bleu_score_sum[3] += sentence_bleu([tokenize(predicted_answer)], tokenize(answer), weights=(1/3, 1/3, 1/3))
-        bleu_score_sum[4] += sentence_bleu([tokenize(predicted_answer)], tokenize(answer), weights=(1/4, 1/4, 1/4, 1/4))
+    return predicted_answer
 
-        count += 1
+def prettify_utterance(utterance, predicted_answer):
+    output = 'RULE TEXT: ' + utterance['snippet'] + '\n'
+    output += 'SCENARIO: ' + utterance['scenario'] + '\n'          
+    output += 'QUESTION: ' + utterance['question'] + '\n'
+    output += 'HISTORY: ' + history_to_string(utterance['history']) + '\n'
+    output += 'GOLD ANSWER: ' + utterance['answer'] + '\n'
+    output += 'PREDICTED ANSWER: ' + str(predicted_answer)
+    return output
 
-with open('evaluation', 'w', encoding='utf-8') as out_file:
-    for i in [1, 2, 3, 4]:
-        print("Bleu-{} score: {}".format(i, bleu_score_sum[i]/count))
-        out_file.write("Bleu-{} score: {}".format(i, bleu_score_sum[i]/count) + '\n')
-    out_file.write('\n\n')
-    out_file.write(buffer)
+def make_json(answers, filename):
+    output_json = []
+    for utterance_id, answer in answers:
+        output_json.append({'utterance_id': utterance_id, 'answer': answer})
+    with open(filename, 'w') as file:
+        json.dump(output_json, file)
+
+def prettify_dict(Dict):
+    output = ''
+    for key, value in Dict.items():
+        output += '{}: {}\n'.format(key, value)
+    return output
+
+if __name__ == "__main__":
+    task = 'full' # 'qgen'
+
+    if len(sys.argv) != 3:
+        print('Usage: python evaluate.py <archived_model> <summary_file_name>')
+        sys.exit()
+    archived_model = sys.argv[1]
+    summary_file = sys.argv[2]
+
+    archive = load_archive(archived_model)
+    predictor = Predictor.from_archive(archive, 'sharc_predictor')
+
+    predicted_answers = []
+    gold_answers = []
+    summary = ''
+    mode_map = {'full': 'combined', 'qgen': 'follow_ups'}
+    dev_dataset = './sharc1-official/json/sharc_dev.json'
+
+    with open(dev_dataset, 'r') as dev_file:
+        dev_json = json.load(dev_file)
+        for utterance in tqdm(dev_json):
+            answer = utterance['answer']
+            scenario = utterance['scenario']
+            if task == 'qgen' and (answer in ['Yes', 'No', 'Irrelevant'] or scenario != ''):
+                continue
+            predicted_answer = get_prediction(predictor, utterance)
+            summary += prettify_utterance(utterance, predicted_answer) + '\n\n\n'
+            gold_answers.append((utterance['utterance_id'], answer))
+            predicted_answers.append((utterance['utterance_id'], predicted_answer))
+
+    make_json(gold_answers, summary_file + '_gold')
+    make_json(predicted_answers, summary_file + '_prediction')
+    results = evaluator.evaluate(summary_file + '_gold', summary_file + '_prediction', mode=mode_map[task])
+    print(prettify_dict(results))
+    summary = prettify_dict(results) + '\n\n' + summary 
+
+    with open(summary_file, 'w', encoding='utf-8') as file:
+        file.write(summary)

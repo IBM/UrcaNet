@@ -1,1 +1,2 @@
 allennlp==0.8.3
+pandas==0.24.2
