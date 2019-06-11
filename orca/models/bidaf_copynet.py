@@ -132,10 +132,8 @@ class BiDAFCopyNetSeq2Seq(Model):
         self.decoder_output_dim = self.encoder_output_dim
         self.decoder_input_dim = self.decoder_output_dim
 
-        # Layer to project modeled passage down
         modeling_dim = self.bidaf_model._modeling_layer.get_output_dim()
-        self._bidaf_output_projection = Linear(modeling_dim, 1)
-        self.max_passage_length = 200
+        self._init_decoder_projection = Linear(self.encoder_output_dim + modeling_dim, self.decoder_output_dim)
 
         target_vocab_size = self.vocab.get_vocab_size(self._target_namespace)
 
@@ -149,7 +147,7 @@ class BiDAFCopyNetSeq2Seq(Model):
         self._target_embedder = Embedding(target_vocab_size, target_embedding_dim)
         self._attention = attention
         self._input_projection_layer = Linear(
-                target_embedding_dim + self.encoder_output_dim * 2 + self.decoder_output_dim,
+                target_embedding_dim + self.encoder_output_dim * 2,
                 self.decoder_input_dim)
 
         # We then run the projected decoder input through an LSTM cell to produce
@@ -221,11 +219,10 @@ class BiDAFCopyNetSeq2Seq(Model):
         state["source_to_target"] = source_to_target
 
         bidaf_output = self.bidaf_model(question, passage)
-        batch_size, passage_length, _ = bidaf_output['modeled_passage'].size()
-        bidaf_context = state["encoder_outputs"].new_zeros(batch_size, self.decoder_output_dim)
-        modeled_passage_proj = relu(self._bidaf_output_projection(bidaf_output['modeled_passage'])).squeeze(2) # shape: (batch_size, passage_length)
-        bidaf_context[:, :min(passage_length, self.max_passage_length)] = modeled_passage_proj[:, :self.max_passage_length]
-        state['bidaf_context'] = bidaf_context
+        modeled_passage = bidaf_output['modeled_passage']
+        # shape: (batch_size, modeling_dim)
+        modeled_passage, _ = modeled_passage.max(1)
+        state['bidaf_context'] = modeled_passage
 
         if target_tokens:
             state = self._init_decoder_state(state)
@@ -250,7 +247,7 @@ class BiDAFCopyNetSeq2Seq(Model):
                                                                     source_token_ids,
                                                                     target_token_ids)
                     self._tensor_based_metric(best_predictions, gold_tokens)  # type: ignore
-
+                    
                 if self._token_based_metric is not None:
                     predicted_tokens = self._get_predicted_tokens(output_dict["predictions"],
                                                 metadata,
@@ -325,7 +322,8 @@ class BiDAFCopyNetSeq2Seq(Model):
                 state["source_mask"],
                 self._encoder.is_bidirectional())
         # shape: (batch_size, decoder_output_dim)
-        state["decoder_hidden"] = final_encoder_output
+        init_decoder_input = torch.cat([final_encoder_output, state['bidaf_context']], -1)
+        state["decoder_hidden"] = relu(self._init_decoder_projection(init_decoder_input))
         # shape: (batch_size, decoder_output_dim)
         decoder_context = state["encoder_outputs"].new_zeros(batch_size, self.decoder_output_dim)
         state["decoder_context"] = decoder_context
@@ -359,8 +357,8 @@ class BiDAFCopyNetSeq2Seq(Model):
         attentive_read = util.weighted_sum(state["encoder_outputs"], attentive_weights)
         # shape: (group_size, encoder_output_dim)
         selective_read = util.weighted_sum(state["encoder_outputs"][:, 1:-1], selective_weights)
-        # shape: (group_size, target_embedding_dim + encoder_output_dim * 2 + decoder_output_dim)
-        decoder_input = torch.cat((embedded_input, attentive_read, selective_read, state['bidaf_context']), -1)
+        # shape: (group_size, target_embedding_dim + encoder_output_dim * 2)
+        decoder_input = torch.cat((embedded_input, attentive_read, selective_read), -1)
         # shape: (group_size, decoder_input_dim)
         projected_decoder_input = self._input_projection_layer(decoder_input)
 

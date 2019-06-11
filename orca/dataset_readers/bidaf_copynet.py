@@ -191,9 +191,9 @@ class BiDAFCopyNetDatasetReader(DatasetReader):
 
         # For CopyNet Model
         source_string = rule_text
-        if history:
-            last_follow_up_question = history[-1]['follow_up_question']
-            source_string += ' @@||@@ ' + last_follow_up_question
+        for follow_up_qna in history:
+            source_string += ' @@||@@ '
+            source_string += follow_up_qna['follow_up_question']
         target_string = answer
     
         # pylint: disable=arguments-differ

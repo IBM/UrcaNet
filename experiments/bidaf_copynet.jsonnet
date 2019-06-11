@@ -2,6 +2,9 @@
   "dataset_reader": {
     "target_namespace": "target_tokens",
     "type": "bidaf_copynet",
+    "bidaf_input_tokenizer": {
+      "type": "word",
+    },
     "source_tokenizer": {
       "type": "word",
     },
@@ -97,7 +100,7 @@
   },
   "trainer": {
     "num_epochs": 50,
-    "patience": 5,
+    "patience": 10,
     "validation_metric": "+BLEU",
     "cuda_device": 0,
     "optimizer": {
