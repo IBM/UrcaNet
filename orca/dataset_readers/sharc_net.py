@@ -220,10 +220,9 @@ class ShARCNetDatasetReader(DatasetReader):
         """
 
         # For CopyNet Model
-        source_string = rule_text
+        source_string = ' @@RS@@ ' + rule_text + ' @@RE@@ '
         for follow_up_qna in history:
-            source_string += ' @@||@@ '
-            source_string += follow_up_qna['follow_up_question']
+            source_string += follow_up_qna['follow_up_question'] + ' '
         target_string = answer
     
         # pylint: disable=arguments-differ
@@ -244,12 +243,14 @@ class ShARCNetDatasetReader(DatasetReader):
 
         # For BiDAF model
         passage_text = rule_text
-        question_text = question + ' @@||@@ ' + scenario
+        question_text = '@@QS@@ ' + question
+        question_text += ' @@SS@@ ' + scenario
+        question_text += ' @@HS@@ '
         for follow_up_qna in history:
-            question_text += ' @@||@@ '
-            question_text += follow_up_qna['follow_up_question']
-            question_text += ' @@?@@ '
-            question_text += follow_up_qna['follow_up_answer']
+            question_text += '@@QS@@ '
+            question_text += follow_up_qna['follow_up_question'] + ' '
+            question_text += follow_up_qna['follow_up_answer'] + ' '
+        question_text += '@@HE@@'
 
         passage_tokens = self._bidaf_tokenizer.tokenize(passage_text)
         question_tokens = self._bidaf_tokenizer.tokenize(question_text)
