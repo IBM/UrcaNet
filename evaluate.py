@@ -37,24 +37,27 @@ def history_to_string(history):
         first_qa = False
     return output
 
-def get_prediction(predictor, utterance):
-    model_output = predictor.predict_json(utterance)
+def get_batch_prediction(predictor, utterances):
+    model_outputs = predictor.predict_batch_json(utterances)
 
-    predicted_action = model_output.get('label', None)
-    
-    if 'best_span_str' in model_output.keys(): # BiDAF
-        predicted_answer = model_output['best_span_str']
-    elif 'prediction' in model_output.keys(): # CopyNet
-        predicted_answer = ' '.join(model_output['prediction'])
-    elif 'predicted_tokens' in model_output.keys(): # CopyNet Baseline
-        predicted_answer = ' '.join(model_output['predicted_tokens'][0])
-    else:
-        raise ValueError('Can\'t get prediction.')
+    predicted_answers = []
+    for model_output in model_outputs:
+        predicted_action = model_output.get('label', None)
+        
+        if 'best_span_str' in model_output.keys(): # BiDAF
+            predicted_answer = model_output['best_span_str']
+        elif 'prediction' in model_output.keys(): # CopyNet
+            predicted_answer = ' '.join(model_output['prediction'])
+        elif 'predicted_tokens' in model_output.keys(): # CopyNet Baseline
+            predicted_answer = ' '.join(model_output['predicted_tokens'][0])
+        else:
+            raise ValueError('Can\'t get prediction.')
 
-    if predicted_action and predicted_action != 'More':
-        predicted_answer = predicted_action
+        if predicted_action and predicted_action != 'More':
+            predicted_answer = predicted_action
+        predicted_answers.append(predicted_answer)
 
-    return predicted_answer
+    return predicted_answers
 
 def prettify_utterance(utterance, predicted_answer):
     output = 'RULE TEXT: ' + utterance['snippet'] + '\n'
@@ -78,6 +81,11 @@ def prettify_dict(Dict):
         output += '{}: {}\n'.format(key, value)
     return output
 
+def chunks(l, n):
+    """Yield successive n-sized chunks from l."""
+    for i in range(0, len(l), n):
+        yield l[i:i + n]
+
 if __name__ == "__main__":
     task = 'full' # 'qgen'
 
@@ -87,7 +95,7 @@ if __name__ == "__main__":
     archived_model = sys.argv[1]
     summary_file = sys.argv[2]
 
-    archive = load_archive(archived_model)
+    archive = load_archive(archived_model, cuda_device=0)
     predictor = Predictor.from_archive(archive, 'sharc_predictor')
 
     predicted_answers = []
@@ -98,15 +106,19 @@ if __name__ == "__main__":
 
     with open(dev_dataset, 'r') as dev_file:
         dev_json = json.load(dev_file)
-        for utterance in tqdm(dev_json):
-            answer = utterance['answer']
-            scenario = utterance['scenario']
-            if task == 'qgen' and (answer in ['Yes', 'No', 'Irrelevant'] or scenario != ''):
-                continue
-            predicted_answer = get_prediction(predictor, utterance)
-            summary += prettify_utterance(utterance, predicted_answer) + '\n\n\n'
-            gold_answers.append((utterance['utterance_id'], answer))
-            predicted_answers.append((utterance['utterance_id'], predicted_answer))
+
+    predicted_answers_ = []
+    for utterances in tqdm(chunks(dev_json, 40)):
+        predicted_answers_ += get_batch_prediction(predictor, utterances)
+
+    for utterance, predicted_answer in zip(dev_json, predicted_answers_):
+        answer = utterance['answer']
+        scenario = utterance['scenario']
+        if task == 'qgen' and (answer in ['Yes', 'No', 'Irrelevant'] or scenario != ''):
+            continue
+        summary += prettify_utterance(utterance, predicted_answer) + '\n\n\n'
+        gold_answers.append((utterance['utterance_id'], answer))
+        predicted_answers.append((utterance['utterance_id'], predicted_answer))
 
     make_json(gold_answers, summary_file + '_gold')
     make_json(predicted_answers, summary_file + '_prediction')
