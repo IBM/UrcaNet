@@ -5,7 +5,11 @@
   "dataset_reader": {
     "type": "bert_qa",
     "tokenizer": {
-      "type": "word"
+      "type": "word",
+      "word_splitter": {
+        "type": "spacy_modified",
+        "never_split": ["[SEP]"], 
+      }
     },
     "token_indexers": {
       "bert": {
@@ -38,18 +42,19 @@
   "iterator": {
     "type": "bucket",
     "sorting_keys": [["bert_input", "num_tokens"]],
-    "batch_size": 8
+    "batch_size": 12
   },
 
   "trainer": {
+    "type": "modified_trainer",
+    "minimal_save": true,
     "num_epochs": 50,
     "patience": 10,
-    "validation_metric": "+span_acc",
+    "validation_metric": "+agg_metric",
     "cuda_device": 0,
     "optimizer": {
       "type": "adam",
       "lr": 1e-5,
     },
-    "num_serialized_models_to_keep": 1
   }
 }

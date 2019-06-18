@@ -108,7 +108,7 @@ class BertModifiedEmbedder(TokenEmbedder):
             # now offsets is (batch_size * d1 * ... * dn, orig_sequence_length + 1)
             range_vector = util.get_range_vector(offsets2d.size(0),
                                                  device=util.get_device_of(mix)).unsqueeze(1)
-            # selected embeddings is also (batch_size * d1 * ... * dn, orig_sequence_length)
+            # selected embeddings is also (batch_size * d1 * ... * dn, orig_sequence_length + 1)
             selected_embeddings = mix[range_vector, offsets2d]
 
             return util.uncombine_initial_dims(selected_embeddings, offsets.size())

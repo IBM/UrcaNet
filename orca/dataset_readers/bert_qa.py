@@ -129,53 +129,58 @@ class BertQAReader(DatasetReader):
                         answer: str = None,
                         evidence: List[Dict[str, str]] = None) -> Optional[Instance]:
         
-        passage_text = rule_text
-        question_text = '@@QS@@ ' + question
-        question_text += ' @@SS@@ ' + scenario
-        question_text += ' @@HS@@ '
+        passage_text = rule_text + ' [SEP]'
+        question_text = question
+        question_text += ' @ss@ ' + scenario
+        question_text += ' @hs@ '
         for follow_up_qna in history:
-            question_text += '@@QS@@ '
+            question_text += '@qs@ '
             question_text += follow_up_qna['follow_up_question'] + ' '
             question_text += follow_up_qna['follow_up_answer'] + ' '
-        question_text += '@@HE@@'
+        question_text += '@he@'
         
-        bert_input = question_text + ' [SEP] ' + passage_text    
+        bert_input = passage_text + ' ' + question_text
         bert_input_tokens = self._tokenizer.tokenize(bert_input)
-        input_offsets = [(token.idx, token.idx + len(token.text)) for token in bert_input_tokens]
+        passage_tokens = self._tokenizer.tokenize(passage_text)
+        passage_offsets = [(token.idx, token.idx + len(token.text)) for token in passage_tokens]
 
         assert len(bert_input_tokens) <= 512
         
         fields: Dict[str, Field] = {}
         bert_input_field = TextField(bert_input_tokens, self._token_indexers)
+        passage_field = TextField(passage_tokens, self._token_indexers)
         fields['bert_input'] = bert_input_field
-        metadata = {'token_offsets': input_offsets,
+        metadata = {'token_offsets': passage_offsets, 'passage_tokens': passage_tokens,
                     'original_bert_input': bert_input}
 
         if answer:
             if answer in ['Yes', 'No', 'Irrelevant']:
                 action = answer
-                fields['span_start'] = IndexField(0, bert_input_field)
-                fields['span_end'] = IndexField(0, bert_input_field)
+                fields['span_start'] = IndexField(0, passage_field)
+                fields['span_end'] = IndexField(0, passage_field)
             else:
                 action = 'More'
                 #TODO: change rule_text if there is passage length limit
                 # token_span = self.find_answer_span(rule_text, answer)
-                token_span = self.find_answer_span(bert_input, answer)
-                if token_span is None or token_span[1] >= len(bert_input_tokens):
+                token_span = self.find_answer_span(passage_text, answer)
+                if token_span is not None and token_span[1] >= len(passage_tokens):
+                    print('Warning')
+                if token_span is None or token_span[1] >= len(passage_tokens):
                     if self.skip_invalid_examples:
                         return None
                     else:
-                        bert_input_len = len(bert_input_tokens)
-                        token_span = (max(bert_input_len - self.min_span_length, 0), bert_input_len - 1)
+                        passage_len = len(passage_tokens)
+                        token_span = (max(passage_len - self.min_span_length, 0), passage_len - 1)
                  
-                fields['span_start'] = IndexField(token_span[0], bert_input_field)
-                fields['span_end'] = IndexField(token_span[1], bert_input_field)
+                fields['span_start'] = IndexField(token_span[0], passage_field)
+                fields['span_end'] = IndexField(token_span[1], passage_field)
 
-                answer_text = bert_input[input_offsets[token_span[0]][0]: input_offsets[token_span[1]][1]]
+                answer_text = passage_text[passage_offsets[token_span[0]][0]: passage_offsets[token_span[1]][1]]
                 answer_texts = [answer_text]
                 
                 metadata['answer_texts'] = answer_texts
                 metadata['original_answer'] = answer
+                metadata['rule'] = rule_text
             metadata['action'] = action
             fields['label'] = LabelField(action)
         fields['metadata'] = MetadataField(metadata)

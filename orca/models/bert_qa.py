@@ -148,26 +148,40 @@ class BertQA(Model):
 
         # Shape: (batch_size, bert_input_len + 1, embedding_dim)
         bert_output = self._text_field_embedder(bert_input)
-        batch_size = bert_output.size(0)
-        input_mask = util.get_text_field_mask(bert_input).float()
-
         # Shape: (batch_size, embedding_dim)
         pooled_output = bert_output[:, 0]
+        # Shape: (batch_size, bert_input_len, embedding_dim)
+        bert_output = bert_output[:, 1:, :] 
+       
+        if bert_input['bert-type-ids'].max() == 0:
+            raise ValueError("Incorrect type-id.")
+
+        # Shape: (batch_size, bert_input_len)
+        input_type_ids = self.wordpiece_to_tokens(bert_input['bert-type-ids'], bert_input['bert-offsets']).float() 
+        # Shape: (batch_size, bert_input_len)
+        input_mask = util.get_text_field_mask(bert_input).float()
+        passage_mask = input_mask - input_type_ids # works only with one [SEP]
+        # Shape: (batch_size, bert_input_len, embedding_dim)
+        passage_representation = bert_output * passage_mask.unsqueeze(2)
+        # Shape: (batch_size, passage_len, embedding_dim)
+        passage_representation = passage_representation[:, passage_mask.sum(dim=0) > 0, :]
+        # Shape: (batch_size, passage_len)        
+        passage_mask = passage_mask[:, passage_mask.sum(dim=0) > 0]
+
         # Shape: (batch_size, 4)
         action_logits = self._action_predictor(pooled_output)
-        bert_output = bert_output[:, 1:, :] 
-        # Shape: (batch_size, bert_input_len, 2)       
-        logits = self._span_predictor(bert_output)
+        # Shape: (batch_size, passage_len, 2)       
+        logits = self._span_predictor(passage_representation)
         span_start_logits, span_end_logits = logits.split(1, dim=-1)
-        # Shape: (batch_size, bert_input_len)        
+        # Shape: (batch_size, passage_len)        
         span_start_logits = span_start_logits.squeeze(-1)
-        # Shape: (batch_size, bert_input_len)        
+        # Shape: (batch_size, passage_len)        
         span_end_logits = span_end_logits.squeeze(-1)
 
-        span_start_probs = util.masked_softmax(span_start_logits, input_mask)
-        span_end_probs = util.masked_softmax(span_end_logits, input_mask)
-        span_start_logits = util.replace_masked_values(span_start_logits, input_mask, -1e7)
-        span_end_logits = util.replace_masked_values(span_end_logits, input_mask, -1e7)
+        span_start_probs = util.masked_softmax(span_start_logits, passage_mask)
+        span_end_probs = util.masked_softmax(span_end_logits, passage_mask)
+        span_start_logits = util.replace_masked_values(span_start_logits, passage_mask, -1e7)
+        span_end_logits = util.replace_masked_values(span_end_logits, passage_mask, -1e7)
         best_span = get_best_span(span_start_logits, span_end_logits)
 
         output_dict = {
@@ -177,16 +191,17 @@ class BertQA(Model):
                 "span_end_probs": span_end_probs,
                 "best_span": best_span,
                 "bert_output": bert_output,
-                "pooled_output": pooled_output
+                "pooled_output": pooled_output,
+                "passage_representation": passage_representation
                 }
 
         # Compute the loss for training.
         if span_start is not None:
             mask = (label.squeeze(-1) == self.vocab.get_token_index('More', namespace="labels")).float()
-            span_loss = nll_loss(util.masked_log_softmax(span_start_logits, input_mask), span_start.squeeze(-1), reduction='none')
+            span_loss = nll_loss(util.masked_log_softmax(span_start_logits, passage_mask), span_start.squeeze(-1), reduction='none')
             if mask.sum() > 1e-7:
                 self._span_start_accuracy(span_start_logits, span_start.squeeze(-1), mask)
-            span_loss += nll_loss(util.masked_log_softmax(span_end_logits, input_mask), span_end.squeeze(-1), reduction='none')
+            span_loss += nll_loss(util.masked_log_softmax(span_end_logits, passage_mask), span_end.squeeze(-1), reduction='none')
             if mask.sum() > 1e-7:
                 self._span_end_accuracy(span_end_logits, span_end.squeeze(-1), mask)
             span_acc_mask = mask.unsqueeze(1).expand(-1, 2).long()
@@ -205,6 +220,7 @@ class BertQA(Model):
             argmax_indices = numpy.argmax(predictions, axis=-1)
             labels = [self.vocab.get_token_from_index(x, namespace="labels") for x in argmax_indices]
             output_dict['label'] = labels
+            batch_size = bert_output.size(0)
             for i in range(batch_size):
                 bert_input_str = metadata[i]['original_bert_input']
                 offsets = metadata[i]['token_offsets']
@@ -238,12 +254,14 @@ class BertQA(Model):
         try:
             span_acc = self._span_accuracy.get_metric(reset)
         except ZeroDivisionError:
-            span_acc = 0                                            
+            span_acc = 0
+        agg_metric = span_acc + action_acc * 0.45                                            
         return {
                 'action_acc': action_acc,
                 'start_acc': start_acc,
                 'end_acc': end_acc,
                 'span_acc': span_acc,
+                'agg_metric': agg_metric
                 }
 
     @staticmethod
@@ -271,3 +289,10 @@ class BertQA(Model):
         span_start_indices = best_spans // passage_length
         span_end_indices = best_spans % passage_length
         return torch.stack([span_start_indices, span_end_indices], dim=-1)
+
+    def wordpiece_to_tokens(self, tensor_, offsets):
+        "Converts (bsz, orig_seq_len) to (bsz, seq_len) by indexing."        
+        batch_size = tensor_.size(0)
+        range_vector = util.get_range_vector(batch_size, device=util.get_device_of(tensor_)).unsqueeze(1)
+        reduced_tensor = tensor_[range_vector, offsets]
+        return reduced_tensor

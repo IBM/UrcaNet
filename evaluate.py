@@ -27,6 +27,8 @@ from orca.models.bidaf_copynet_ft import BiDAFCopyNetFTSeq2Seq
 from orca.models.bert_qa import BertQA
 from orca.models.sharc_net import ShARCNet
 from orca.predictors.sharc_predictor import ShARCPredictor
+from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
+from orca.modules.word_splitter import SpacyWordSplitterModified
 
 def history_to_string(history):
     output = ''
@@ -97,7 +99,8 @@ if __name__ == "__main__":
     archived_model = sys.argv[1]
     summary_file = sys.argv[2]
 
-    archive = load_archive(archived_model, cuda_device=0)
+    cuda_device = 0 if torch.cuda.is_available() else -1
+    archive = load_archive(archived_model, cuda_device=cuda_device)
     predictor = Predictor.from_archive(archive, 'sharc_predictor')
 
     predicted_answers = []
