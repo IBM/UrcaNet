@@ -22,12 +22,14 @@ from orca.dataset_readers.bidaf_copynet_ft import BiDAFCopyNetFTDatasetReader
 from orca.dataset_readers.sharc_net import ShARCNetDatasetReader
 from orca.dataset_readers.bert_qa import BertQAReader
 from orca.dataset_readers.bert_copynet import BertCopyNetDatasetReader
+from orca.dataset_readers.bert_copynet_dual import BertCopyNetDualDatasetReader
 from orca.models.bidaf_modified import BidirectionalAttentionFlowModified
 from orca.models.bidaf_copynet import BiDAFCopyNetSeq2Seq
 from orca.models.bidaf_ft import BidirectionalAttentionFlowFT
 from orca.models.bidaf_copynet_ft import BiDAFCopyNetFTSeq2Seq
 from orca.models.bert_qa import BertQA
 from orca.models.bert_copynet import BertCopyNetFTSeq2Seq
+from orca.models.bert_copynet_dual import BertCopyNetDualSeq2Seq
 from orca.models.sharc_net import ShARCNet
 from orca.predictors.sharc_predictor import ShARCPredictor
 from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
