@@ -18,7 +18,7 @@
     },
     "bert_token_indexers": {
       "bert": {
-        "type": "bert-pretrained",
+        "type": "bert-pretrained_hist_aug",
         "pretrained_model": "bert-base-uncased",
         "do_lowercase": true,
       },
@@ -45,9 +45,9 @@
             "top_layer_only": false
           },
         },
-        "embedder_to_indexer_map": {
-          "bert": ["bert", "bert-offsets", "bert-type-ids"]
-        },
+      "embedder_to_indexer_map": {
+        "bert": ["bert", "bert-offsets", "bert-type-ids", "history_encoding"]
+      },
         "allow_unmatched_keys": true
       }
     },

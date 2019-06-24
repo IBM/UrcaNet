@@ -33,6 +33,7 @@ from orca.models.bert_copynet_dual import BertCopyNetDualSeq2Seq
 from orca.models.sharc_net import ShARCNet
 from orca.predictors.sharc_predictor import ShARCPredictor
 from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
+from orca.modules.bert_indexer import PretrainedBertHistoryAugmentedIndexer
 from orca.modules.word_splitter import SpacyWordSplitterModified
 
 def history_to_string(history):

@@ -105,17 +105,43 @@ class BertQAReader(DatasetReader):
             if instance is not None:
                 yield instance
 
-    def find_answer_span(self, rule, answer):
+    def find_answer_span(self, rule, answer, min_span_length):
         rule, answer = rule.lower(), answer.lower()
         rule = [token.text for token in self._tokenizer.tokenize(rule)]
         answer = [token.text for token in self._tokenizer.tokenize(answer)]
 
         sequenceMatcher = SequenceMatcher(None, rule, answer, autojunk=False)
         match = sequenceMatcher.find_longest_match(0, len(rule), 0, len(answer))
-        if match.size < self.min_span_length:
+        if match.size < min_span_length:
             return None
         else:
             return match.a, match.a + match.size - 1
+
+    def get_tokens_with_history_encoding(self, bert_input, history):
+        NOT_ASKED = 1
+        ASKED_ANS_YES = 2
+        ASKED_ANS_NO = 3
+
+        passage_text = bert_input.split('[SEP]')[0][:-1]
+        passage_tokens_len = len(self._tokenizer.tokenize(passage_text))
+        history_encoding = [NOT_ASKED] * passage_tokens_len  
+        for followup_qa in history:
+            followup_ques = followup_qa['follow_up_question']
+            followup_ans = followup_qa['follow_up_answer']
+            token_span = self.find_answer_span(passage_text, followup_ques, 0)
+            if token_span is not None:
+                start_ix = token_span[0]
+                end_ix = token_span[1] + 1 # exclusive
+                span_size = end_ix - start_ix
+                if followup_ans == 'Yes':
+                    history_encoding[start_ix: end_ix] = [ASKED_ANS_YES] * span_size
+                else:
+                    history_encoding[start_ix: end_ix] = [ASKED_ANS_NO] * span_size
+        
+        bert_input_tokens = self._tokenizer.tokenize(bert_input)
+        for i, token in enumerate(bert_input_tokens[:passage_tokens_len]):
+            bert_input_tokens[i] = token._replace(pos_=history_encoding[i])
+        return bert_input_tokens
 
     @overrides
     def text_to_instance(self,  # type: ignore
@@ -132,15 +158,10 @@ class BertQAReader(DatasetReader):
         passage_text = rule_text + ' [SEP]'
         question_text = question
         question_text += ' @ss@ ' + scenario
-        question_text += ' @hs@ '
-        for follow_up_qna in history:
-            question_text += '@qs@ '
-            question_text += follow_up_qna['follow_up_question'] + ' '
-            question_text += follow_up_qna['follow_up_answer'] + ' '
-        question_text += '@he@'
+        question_text += ' @se@ '
         
         bert_input = passage_text + ' ' + question_text
-        bert_input_tokens = self._tokenizer.tokenize(bert_input)
+        bert_input_tokens = self.get_tokens_with_history_encoding(bert_input, history)
         passage_tokens = self._tokenizer.tokenize(passage_text)
         passage_offsets = [(token.idx, token.idx + len(token.text)) for token in passage_tokens]
 
@@ -162,7 +183,7 @@ class BertQAReader(DatasetReader):
                 action = 'More'
                 #TODO: change rule_text if there is passage length limit
                 # token_span = self.find_answer_span(rule_text, answer)
-                token_span = self.find_answer_span(passage_text, answer)
+                token_span = self.find_answer_span(passage_text, answer, self.min_span_length)
                 if token_span is not None and token_span[1] >= len(passage_tokens):
                     print('Warning')
                 if token_span is None or token_span[1] >= len(passage_tokens):

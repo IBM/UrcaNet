@@ -14,6 +14,7 @@ from allennlp.data.instance import Instance
 from allennlp.data.tokenizers import Token, Tokenizer, WordTokenizer
 from allennlp.data.token_indexers import TokenIndexer, SingleIdTokenIndexer
 
+from difflib import SequenceMatcher
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -160,6 +161,44 @@ class BertCopyNetDualDatasetReader(DatasetReader):
             out.append(ids.setdefault(token.text.lower(), len(ids)))
         return out
 
+    def find_answer_span(self, rule, answer, min_span_length):
+        rule, answer = rule.lower(), answer.lower()
+        rule = [token.text for token in self._bert_tokenizer.tokenize(rule)]
+        answer = [token.text for token in self._bert_tokenizer.tokenize(answer)]
+
+        sequenceMatcher = SequenceMatcher(None, rule, answer, autojunk=False)
+        match = sequenceMatcher.find_longest_match(0, len(rule), 0, len(answer))
+        if match.size < min_span_length:
+            return None
+        else:
+            return match.a, match.a + match.size - 1
+
+    def get_tokens_with_history_encoding(self, bert_input, history):
+        NOT_ASKED = 1
+        ASKED_ANS_YES = 2
+        ASKED_ANS_NO = 3
+
+        passage_text = bert_input.split('[SEP]')[0][:-1]
+        passage_tokens_len = len(self._bert_tokenizer.tokenize(passage_text))
+        history_encoding = [NOT_ASKED] * passage_tokens_len  
+        for followup_qa in history:
+            followup_ques = followup_qa['follow_up_question']
+            followup_ans = followup_qa['follow_up_answer']
+            token_span = self.find_answer_span(passage_text, followup_ques, 0)
+            if token_span is not None:
+                start_ix = token_span[0]
+                end_ix = token_span[1] + 1 # exclusive
+                span_size = end_ix - start_ix
+                if followup_ans == 'Yes':
+                    history_encoding[start_ix: end_ix] = [ASKED_ANS_YES] * span_size
+                else:
+                    history_encoding[start_ix: end_ix] = [ASKED_ANS_NO] * span_size
+        
+        bert_input_tokens = self._bert_tokenizer.tokenize(bert_input)
+        for i, token in enumerate(bert_input_tokens[:passage_tokens_len]):
+            bert_input_tokens[i] = token._replace(pos_=history_encoding[i])
+        return bert_input_tokens
+
     @overrides
     def text_to_instance(self,  # type: ignore
                         rule_text: str,
@@ -211,17 +250,11 @@ class BertCopyNetDualDatasetReader(DatasetReader):
 
         passage_text2 = rule_text + ' [SEP]'
         question_text2 = scenario
-        question_text2 += ' @hs@ '
-        for follow_up_qna in history:
-            question_text2 += '@qs@ '
-            question_text2 += follow_up_qna['follow_up_question'] + ' '
-            question_text2 += follow_up_qna['follow_up_answer'] + ' '
-        question_text2 += '@he@'
 
         bert_input1 = passage_text1 + ' ' + question_text1
         bert_input2 = passage_text2 + ' ' + question_text2
 
-        bert_input_tokens1 = self._bert_tokenizer.tokenize(bert_input1)
+        bert_input_tokens1 = self.get_tokens_with_history_encoding(bert_input1, history)
         bert_input_tokens2 = self._bert_tokenizer.tokenize(bert_input2)
         bert_input_tokens1.insert(0, Token(START_SYMBOL))
         bert_input_tokens2.insert(0, Token(START_SYMBOL))

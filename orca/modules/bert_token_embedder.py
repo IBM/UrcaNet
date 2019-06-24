@@ -11,7 +11,7 @@ import logging
 
 import torch
 
-from pytorch_pretrained_bert.modeling import BertModel
+from .bert import BertModelModified
 
 from allennlp.modules.scalar_mix import ScalarMix
 from allennlp.modules.token_embedders.token_embedder import TokenEmbedder
@@ -35,7 +35,7 @@ class BertModifiedEmbedder(TokenEmbedder):
     top_layer_only: ``bool``, optional (default = ``False``)
         If ``True``, then only return the top layer instead of apply the scalar mix.
     """
-    def __init__(self, bert_model: BertModel, top_layer_only: bool = False) -> None:
+    def __init__(self, bert_model: BertModelModified, top_layer_only: bool = False) -> None:
         super().__init__()
         self.bert_model = bert_model
         self.output_dim = bert_model.config.hidden_size
@@ -51,7 +51,8 @@ class BertModifiedEmbedder(TokenEmbedder):
     def forward(self,
                 input_ids: torch.LongTensor,
                 offsets: torch.LongTensor = None,
-                token_type_ids: torch.LongTensor = None) -> torch.Tensor:
+                token_type_ids: torch.LongTensor = None,
+                history_encoding: torch.LongTensor = None) -> torch.Tensor:
         """
         Parameters
         ----------
@@ -81,6 +82,8 @@ class BertModifiedEmbedder(TokenEmbedder):
         # pylint: disable=arguments-differ
         if token_type_ids is None:
             token_type_ids = torch.zeros_like(input_ids)
+        if history_encoding is None:
+            history_encoding = torch.zeros_like(input_ids)
 
         input_mask = (input_ids != 0).long()
 
@@ -88,6 +91,7 @@ class BertModifiedEmbedder(TokenEmbedder):
         # before calling the BERT model and then reshape back at the end.
         all_encoder_layers, pooled_output = self.bert_model(input_ids=util.combine_initial_dims(input_ids),
                                                             token_type_ids=util.combine_initial_dims(token_type_ids),
+                                                            history_encoding=util.combine_initial_dims(history_encoding),
                                                             attention_mask=util.combine_initial_dims(input_mask))
         if self._scalar_mix is not None:
             mix = self._scalar_mix(all_encoder_layers, input_mask)
@@ -133,7 +137,7 @@ class PretrainedBertModifiedEmbedder(BertModifiedEmbedder):
         If ``True``, then only return the top layer instead of apply the scalar mix.
     """
     def __init__(self, pretrained_model: str, requires_grad: bool = False, top_layer_only: bool = False) -> None:
-        model = BertModel.from_pretrained(pretrained_model)
+        model = BertModelModified.from_pretrained(pretrained_model)
 
         for param in model.parameters():
             param.requires_grad = requires_grad
