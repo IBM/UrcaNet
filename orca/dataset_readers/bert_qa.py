@@ -158,7 +158,12 @@ class BertQAReader(DatasetReader):
         passage_text = rule_text + ' [SEP]'
         question_text = question
         question_text += ' @ss@ ' + scenario
-        question_text += ' @se@ '
+        question_text += ' @hs@ '
+        for follow_up_qna in history:
+            question_text += '@qs@ '
+            question_text += follow_up_qna['follow_up_question'] + ' '
+            question_text += follow_up_qna['follow_up_answer'] + ' '
+        question_text += '@he@'
         
         bert_input = passage_text + ' ' + question_text
         bert_input_tokens = self.get_tokens_with_history_encoding(bert_input, history)
