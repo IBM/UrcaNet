@@ -124,7 +124,9 @@ class BertQAReader(DatasetReader):
 
         passage_text = bert_input.split('[SEP]')[0][:-1]
         passage_tokens_len = len(self._tokenizer.tokenize(passage_text))
-        history_encoding = [NOT_ASKED] * passage_tokens_len  
+        history_encoding = [NOT_ASKED] * passage_tokens_len
+        turn_encoding = [0] * passage_tokens_len
+        turn_number = 1
         for followup_qa in history:
             followup_ques = followup_qa['follow_up_question']
             followup_ans = followup_qa['follow_up_answer']
@@ -137,10 +139,13 @@ class BertQAReader(DatasetReader):
                     history_encoding[start_ix: end_ix] = [ASKED_ANS_YES] * span_size
                 else:
                     history_encoding[start_ix: end_ix] = [ASKED_ANS_NO] * span_size
+                turn_encoding[start_ix: end_ix] = [turn_number] * span_size 
+            turn_number = min(turn_number + 1, 6)
         
         bert_input_tokens = self._tokenizer.tokenize(bert_input)
         for i, token in enumerate(bert_input_tokens[:passage_tokens_len]):
-            bert_input_tokens[i] = token._replace(pos_=history_encoding[i])
+            bert_input_tokens[i] = token._replace(pos_=history_encoding[i], tag_=turn_encoding[i])
+      
         return bert_input_tokens
 
     @overrides

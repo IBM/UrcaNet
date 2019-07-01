@@ -34,7 +34,7 @@
         },
       },
       "embedder_to_indexer_map": {
-        "bert": ["bert", "bert-offsets", "bert-type-ids", "history_encoding"]
+        "bert": ["bert", "bert-offsets", "bert-type-ids", "history_encoding", "turn_encoding"]
       },
       "allow_unmatched_keys": true
     },
