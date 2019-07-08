@@ -12,6 +12,7 @@ from allennlp.models.reading_comprehension.util import get_best_span
 from allennlp.modules import Highway
 from allennlp.modules import Seq2SeqEncoder, SimilarityFunction, TimeDistributed, TextFieldEmbedder
 from allennlp.modules.matrix_attention.legacy_matrix_attention import LegacyMatrixAttention
+from allennlp.training.metrics.average import Average
 from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
 from allennlp.modules.text_field_embedders import BasicTextFieldEmbedder
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
@@ -77,12 +78,16 @@ class BertQA(Model):
         self._text_field_embedder = text_field_embedder
         embedding_dim = self._text_field_embedder.get_output_dim()
         self._action_predictor = torch.nn.Linear(embedding_dim, 4)
+        self._passage_token_label_predictor = torch.nn.Linear(embedding_dim, 3)
         self._span_predictor = torch.nn.Linear(embedding_dim, 2)
         self._action_accuracy = CategoricalAccuracy()
         self._span_start_accuracy = CategoricalAccuracy()
         self._span_end_accuracy = CategoricalAccuracy()
         self._span_accuracy = BooleanAccuracy()
         self._squad_metrics = SquadEmAndF1()
+        self._span_loss_metric = Average()
+        self._action_loss_metric = Average()
+        self._token_loss_metric = Average()
         if dropout > 0:
             self._dropout = torch.nn.Dropout(p=dropout)
         else:
@@ -95,7 +100,8 @@ class BertQA(Model):
                 span_start: torch.IntTensor = None,
                 span_end: torch.IntTensor = None,
                 metadata: List[Dict[str, Any]] = None,
-                label: torch.LongTensor = None) -> Dict[str, torch.Tensor]:
+                label: torch.LongTensor = None,
+                passage_token_labels: torch.LongTensor = None) -> Dict[str, torch.Tensor]:
         # pylint: disable=arguments-differ
         """
         Parameters
@@ -177,6 +183,8 @@ class BertQA(Model):
         span_start_logits = span_start_logits.squeeze(-1)
         # Shape: (batch_size, passage_len)        
         span_end_logits = span_end_logits.squeeze(-1)
+        # Shape: (batch_size, passage_len, 3)
+        passage_token_logits = self._passage_token_label_predictor(passage_representation)        
 
         span_start_probs = util.masked_softmax(span_start_logits, passage_mask)
         span_end_probs = util.masked_softmax(span_end_logits, passage_mask)
@@ -192,7 +200,8 @@ class BertQA(Model):
                 "best_span": best_span,
                 "bert_output": bert_output,
                 "pooled_output": pooled_output,
-                "passage_representation": passage_representation
+                "passage_representation": passage_representation,
+                "passage_token_logits": passage_token_logits
                 }
 
         # Compute the loss for training.
@@ -211,7 +220,12 @@ class BertQA(Model):
 
             action_loss = cross_entropy(action_logits, label.squeeze(-1))
             self._action_accuracy(action_logits, label.squeeze(-1))
-            output_dict['loss'] = span_loss + 5 * action_loss
+            passage_token_loss = cross_entropy(passage_token_logits.view(-1, 3), passage_token_labels.view(-1), ignore_index=-1)
+
+            self._span_loss_metric(span_loss.item())
+            self._action_loss_metric(action_loss.item())
+            self._token_loss_metric(passage_token_loss.item())
+            output_dict['loss'] = span_loss + 5 * action_loss + passage_token_loss
 
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if metadata is not None:
@@ -255,13 +269,19 @@ class BertQA(Model):
             span_acc = self._span_accuracy.get_metric(reset)
         except ZeroDivisionError:
             span_acc = 0
+        span_loss = self._span_loss_metric.get_metric(reset)
+        action_loss = self._action_loss_metric.get_metric(reset)
+        token_loss = self._token_loss_metric.get_metric(reset)
         agg_metric = span_acc + action_acc * 0.45                                            
         return {
                 'action_acc': action_acc,
                 'start_acc': start_acc,
                 'end_acc': end_acc,
                 'span_acc': span_acc,
-                'agg_metric': agg_metric
+                'agg_metric': agg_metric,
+                'span_loss': span_loss,
+                'action_loss': action_loss,
+                'token_loss': token_loss
                 }
 
     @staticmethod

@@ -1,5 +1,6 @@
 import json
 import logging
+import numpy
 from typing import Dict, List, Tuple, Optional
 
 from overrides import overrides
@@ -7,7 +8,7 @@ from overrides import overrides
 from allennlp.common.file_utils import cached_path
 from allennlp.data.dataset_readers.dataset_reader import DatasetReader
 from allennlp.data.fields import Field, TextField, IndexField, \
-    MetadataField, LabelField, ListField, SequenceLabelField
+    MetadataField, LabelField, ListField, SequenceLabelField, ArrayField
 from allennlp.data.instance import Instance
 from allennlp.data.token_indexers import PretrainedBertIndexer, TokenIndexer
 from allennlp.data.tokenizers import Token, Tokenizer, WordTokenizer
@@ -105,7 +106,7 @@ class BertQAReader(DatasetReader):
             if instance is not None:
                 yield instance
 
-    def find_answer_span(self, rule, answer, min_span_length):
+    def find_answer_span(self, rule, answer, min_span_length=3):
         rule, answer = rule.lower(), answer.lower()
         rule = [token.text for token in self._tokenizer.tokenize(rule)]
         answer = [token.text for token in self._tokenizer.tokenize(answer)]
@@ -116,6 +117,29 @@ class BertQAReader(DatasetReader):
             return None
         else:
             return match.a, match.a + match.size - 1
+
+    def get_passage_token_labels(self, passage_text, evidence):
+        NOT_ASKED = 0
+        ASKED_ANS_YES = 1
+        ASKED_ANS_NO = 2
+
+        passage_tokens_len = len(self._tokenizer.tokenize(passage_text))
+        labels = numpy.zeros(passage_tokens_len, dtype=numpy.int64)
+
+        for followup_qa in evidence:
+            if 'follow_up_question' not in followup_qa or 'follow_up_answer' not in followup_qa:
+                continue
+            followup_ques = followup_qa['follow_up_question'] 
+            followup_ans = followup_qa['follow_up_answer']
+            token_span = self.find_answer_span(passage_text, followup_ques, 0)
+            if token_span is not None:
+                start_ix = token_span[0]
+                end_ix = token_span[1] + 1 # exclusive
+                if followup_ans == 'Yes':
+                    labels[start_ix: end_ix] = ASKED_ANS_YES
+                else:
+                    labels[start_ix: end_ix] = ASKED_ANS_NO
+        return labels
 
     def get_tokens_with_history_encoding(self, bert_input, history):
         NOT_ASKED = 1
@@ -181,6 +205,9 @@ class BertQAReader(DatasetReader):
         bert_input_field = TextField(bert_input_tokens, self._token_indexers)
         passage_field = TextField(passage_tokens, self._token_indexers)
         fields['bert_input'] = bert_input_field
+        if evidence is not None:
+            passage_token_labels = self.get_passage_token_labels(passage_text, evidence)
+            fields['passage_token_labels'] = ArrayField(passage_token_labels, padding_value=-1, dtype=numpy.int64)
         metadata = {'token_offsets': passage_offsets, 'passage_tokens': passage_tokens,
                     'original_bert_input': bert_input}
 
