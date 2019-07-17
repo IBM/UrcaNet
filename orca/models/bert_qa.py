@@ -72,6 +72,7 @@ class BertQA(Model):
                  text_field_embedder: TextFieldEmbedder,
                  text_field_embedder_scenario: TextFieldEmbedder,
                  dropout: float = 0.2,
+                 scenario_encoding: bool = True,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(BertQA, self).__init__(vocab, regularizer)
@@ -80,7 +81,7 @@ class BertQA(Model):
         self._text_field_embedder_scenario = text_field_embedder_scenario
         embedding_dim = self._text_field_embedder.get_output_dim()
         self._action_predictor = torch.nn.Linear(embedding_dim, 4)
-        self._passage_token_label_predictor = torch.nn.Linear(embedding_dim, 3)
+        self._passage_token_label_predictor = torch.nn.Linear(embedding_dim, 4)
         self._span_predictor = torch.nn.Linear(embedding_dim, 2)
         self._action_accuracy = CategoricalAccuracy()
         self._span_start_accuracy = CategoricalAccuracy()
@@ -90,8 +91,9 @@ class BertQA(Model):
         self._span_loss_metric = Average()
         self._action_loss_metric = Average()
         self._token_loss_metric = Average()
-        self._yes_token_f1 = F1Measure(1)
-        self._no_token_f1 = F1Measure(2)
+        self._yes_token_f1 = F1Measure(2)
+        self._no_token_f1 = F1Measure(3)
+        self.scenario_encoding = scenario_encoding
         if dropout > 0:
             self._dropout = torch.nn.Dropout(p=dropout)
         else:
@@ -120,8 +122,7 @@ class BertQA(Model):
                 span_start: torch.IntTensor = None,
                 span_end: torch.IntTensor = None,
                 metadata: List[Dict[str, Any]] = None,
-                label: torch.LongTensor = None,
-                passage_token_labels: torch.LongTensor = None) -> Dict[str, torch.Tensor]:
+                label: torch.LongTensor = None) -> Dict[str, torch.Tensor]:
         # pylint: disable=arguments-differ
         """
         Parameters
@@ -172,26 +173,29 @@ class BertQA(Model):
             question.
         """
 
-        bert_output_scenario_long = self._text_field_embedder_scenario(bert_input_scenario)
+        if self.scenario_encoding:
+            bert_token_labels_wp = bert_input_scenario['scenario_gold_encoding']   
 
-        offsets = bert_input_scenario['bert-offsets']
-        range_vector = util.get_range_vector(offsets.size(0), device=util.get_device_of(bert_output_scenario_long)).unsqueeze(1)
-        # selected embeddings is also (batch_size * d1 * ... * dn, orig_sequence_length)
-        bert_output_scenario = bert_output_scenario_long[range_vector, offsets]
+            bert_output_scenario_wp = self._text_field_embedder_scenario(bert_input_scenario)
+            input_mask_scenario_wp = (bert_input_scenario['bert'] != 0).float()
+            passage_mask_scenario_wp = input_mask_scenario_wp - bert_input_scenario['bert-type-ids'].float() # works only with one [SEP]
+            passage_representation_scenario_wp = bert_output_scenario_wp * passage_mask_scenario_wp.unsqueeze(2)
+            passage_representation_scenario_wp = passage_representation_scenario_wp[:, passage_mask_scenario_wp.sum(dim=0) > 0, :]
+            passage_token_labels_wp = bert_token_labels_wp[:, passage_mask_scenario_wp.sum(dim=0) > 0]
+            passage_mask_scenario_wp = passage_mask_scenario_wp[:, passage_mask_scenario_wp.sum(dim=0) > 0]
 
-        passage_representation_scenario, passage_mask_scenario = self.get_passage_representation(bert_output_scenario, bert_input_scenario)
-        # Shape: (batch_size, passage_len, 3)
-        passage_token_logits = self._passage_token_label_predictor(passage_representation_scenario)   
+            # Shape: (batch_size, passage_len, 4)
+            passage_token_logits = self._passage_token_label_predictor(passage_representation_scenario_wp)
 
-        bert_input['scenario_encoding'] = (passage_token_logits.argmax(dim=-1) + 1) * passage_mask_scenario.long()
-        bert_input_wp_len = bert_input['history_encoding'].size(1)
-        if bert_input['scenario_encoding'].size(1) > bert_input_wp_len:
-            bert_input['scenario_encoding'] = bert_input['scenario_encoding'][:, :bert_input_wp_len]
-        else:
-            batch_size = bert_input['scenario_encoding'].size(0)
-            difference = bert_input_wp_len - bert_input['scenario_encoding'].size(1)
-            zeros = torch.zeros(batch_size, difference, dtype=bert_input['scenario_encoding'].dtype, device=bert_input['scenario_encoding'].device)
-            bert_input['scenario_encoding'] = torch.cat([bert_input['scenario_encoding'], zeros], dim=-1)
+            bert_input['scenario_encoding'] = (passage_token_logits.argmax(dim=-1)) * passage_mask_scenario_wp.long()
+            bert_input_wp_len = bert_input['history_encoding'].size(1)
+            if bert_input['scenario_encoding'].size(1) > bert_input_wp_len:
+                bert_input['scenario_encoding'] = bert_input['scenario_encoding'][:, :bert_input_wp_len]
+            else:
+                batch_size = bert_input['scenario_encoding'].size(0)
+                difference = bert_input_wp_len - bert_input['scenario_encoding'].size(1)
+                zeros = torch.zeros(batch_size, difference, dtype=bert_input['scenario_encoding'].dtype, device=bert_input['scenario_encoding'].device)
+                bert_input['scenario_encoding'] = torch.cat([bert_input['scenario_encoding'], zeros], dim=-1)
 
         # Shape: (batch_size, bert_input_len + 1, embedding_dim)
         bert_output = self._text_field_embedder(bert_input)
@@ -229,8 +233,10 @@ class BertQA(Model):
                 "best_span": best_span,
                 "pooled_output": pooled_output,
                 "passage_representation": passage_representation,
-                "passage_token_logits": passage_token_logits
                 }
+
+        if self.scenario_encoding:
+            output_dict["passage_token_logits"] = passage_token_logits
 
         # Compute the loss for training.
         if span_start is not None:
@@ -249,15 +255,17 @@ class BertQA(Model):
             action_loss = cross_entropy(action_logits, label.squeeze(-1))
             self._action_accuracy(action_logits, label.squeeze(-1))
 
-            weights = torch.tensor([1, 50, 50], device=passage_token_logits.device, dtype=torch.float)
-            passage_token_loss = cross_entropy(passage_token_logits.view(-1, 3), passage_token_labels.view(-1), ignore_index=-1, weight=weights)
-
             self._span_loss_metric(span_loss.item())
             self._action_loss_metric(action_loss.item())
-            self._token_loss_metric(passage_token_loss.item())
-            self._yes_token_f1(passage_token_logits, passage_token_labels, passage_mask_scenario)
-            self._no_token_f1(passage_token_logits, passage_token_labels, passage_mask_scenario)
-            output_dict['loss'] = span_loss + action_loss + passage_token_loss
+            output_dict['loss'] = span_loss + 5 * action_loss
+
+            if self.scenario_encoding:
+                weights = torch.tensor([0, 1, 50, 50], device=passage_token_logits.device, dtype=torch.float)
+                passage_token_loss = cross_entropy(passage_token_logits.view(-1, 4), passage_token_labels_wp.view(-1), ignore_index=0, weight=weights)
+                self._token_loss_metric(passage_token_loss.item())
+                self._yes_token_f1(passage_token_logits, passage_token_labels_wp, passage_mask_scenario_wp)
+                self._no_token_f1(passage_token_logits, passage_token_labels_wp, passage_mask_scenario_wp)
+                output_dict['loss'] += 5 * passage_token_loss
 
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if metadata is not None:

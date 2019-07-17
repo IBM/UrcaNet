@@ -25,6 +25,7 @@
   "validation_data_path": "sharc1-official/json/sharc_val_split.json",
   "model": {
     "type": "bert_qa",
+    "scenario_encoding": true,
     "text_field_embedder": {
       "type": "basic",
       "token_embedders": {
@@ -70,7 +71,7 @@
     "validation_metric": "+agg_metric",
     "cuda_device": 0,
     "optimizer": {
-      "type": "bert_adam",
+      "type": "adam",
       "lr": 1e-5,
     },
   }

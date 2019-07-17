@@ -122,13 +122,13 @@ class BertQAReader(DatasetReader):
         else:
             return match.a, match.a + match.size - 1
 
-    def get_passage_token_labels(self, passage_text, evidence):
-        NOT_ASKED = 0
-        ASKED_ANS_YES = 1
-        ASKED_ANS_NO = 2
+    def add_scenario_gold_encodings(self, bert_input_tokens, passage_text, evidence):
+        NOT_ASKED = 1
+        ASKED_ANS_YES = 2
+        ASKED_ANS_NO = 3
 
         passage_tokens_len = len(self._tokenizer.tokenize(passage_text))
-        labels = numpy.zeros(passage_tokens_len, dtype=numpy.int64)
+        labels = numpy.ones(passage_tokens_len, dtype=numpy.int64) * NOT_ASKED
 
         for followup_qa in evidence:
             if 'follow_up_question' not in followup_qa or 'follow_up_answer' not in followup_qa:
@@ -143,7 +143,9 @@ class BertQAReader(DatasetReader):
                     labels[start_ix: end_ix] = ASKED_ANS_YES
                 else:
                     labels[start_ix: end_ix] = ASKED_ANS_NO
-        return labels
+        for i, token in enumerate(bert_input_tokens[:passage_tokens_len]):
+            bert_input_tokens[i] = token._replace(dep_=int(labels[i]))
+        return bert_input_tokens
 
     def get_tokens_with_history_encoding(self, bert_input, history):
         NOT_ASKED = 1
@@ -155,7 +157,7 @@ class BertQAReader(DatasetReader):
         history_encoding = [NOT_ASKED] * passage_tokens_len
         turn_encoding = [0] * passage_tokens_len
         turn_number = 1
-        for followup_qa in history:
+        for followup_qa in reversed(history):
             followup_ques = followup_qa['follow_up_question']
             followup_ans = followup_qa['follow_up_answer']
             token_span = self.find_answer_span(passage_text, followup_ques, 0)
@@ -188,7 +190,7 @@ class BertQAReader(DatasetReader):
                         evidence: List[Dict[str, str]] = None) -> Optional[Instance]:
         
         passage_text = rule_text + ' [SEP]'
-        question_text = question + '@qe@'
+        question_text = question + ' @qe@'
         if self.add_scenario:
             question_text += ' @ss@ ' + scenario + ' @se'
         if self.add_history:
@@ -203,9 +205,11 @@ class BertQAReader(DatasetReader):
         bert_input_tokens = self.get_tokens_with_history_encoding(bert_input, history)
 
         passage_text_scenario = rule_text + ' [SEP]'
-        question_text_scenario = '@ss@ ' + scenario + ' @se'
+        question_text_scenario = '@ss@ ' + scenario + ' @se@'
         bert_input_scenario = passage_text_scenario + ' ' + question_text_scenario
         bert_input_tokens_scenario = self._tokenizer.tokenize(bert_input_scenario)
+        if evidence is not None:
+            bert_input_tokens_scenario = self.add_scenario_gold_encodings(bert_input_tokens_scenario, passage_text, evidence)
 
         passage_tokens = self._tokenizer.tokenize(passage_text)
         passage_offsets = [(token.idx, token.idx + len(token.text)) for token in passage_tokens]
@@ -217,9 +221,6 @@ class BertQAReader(DatasetReader):
         passage_field = TextField(passage_tokens, self._token_indexers)
         fields['bert_input'] = bert_input_field
         fields['bert_input_scenario'] = TextField(bert_input_tokens_scenario, self._token_indexers)
-        if evidence is not None:
-            passage_token_labels = self.get_passage_token_labels(passage_text, evidence)
-            fields['passage_token_labels'] = ArrayField(passage_token_labels, padding_value=-1, dtype=numpy.int64)
         metadata = {'token_offsets': passage_offsets, 'passage_tokens': passage_tokens,
                     'original_bert_input': bert_input}
 

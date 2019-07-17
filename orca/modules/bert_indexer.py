@@ -71,6 +71,7 @@ class PretrainedBertHistoryAugmentedIndexer(PretrainedBertIndexer):
         PADDING = 0
         history_encoding = [PADDING] * len(self._start_piece_ids)
         turn_encoding = [PADDING] * len(self._start_piece_ids)
+        scenario_gold_encoding = [PADDING] * len(self._start_piece_ids)
 
         # offsets[i] will give us the index into wordpiece_ids
         # for the wordpiece "corresponding to" the i-th input token.
@@ -91,8 +92,10 @@ class PretrainedBertHistoryAugmentedIndexer(PretrainedBertIndexer):
                                    for wordpiece in self.wordpiece_tokenizer(text)]
             token_history_encoding = token.pos_ if isinstance(token.pos_, int) else PADDING
             token_turn_encoding = token.tag_ if isinstance(token.tag_, int) else PADDING
+            token_scenario_encoding = token.dep_ if isinstance(token.dep_, int) else PADDING
             history_encoding += [token_history_encoding] * len(token_wordpiece_ids)
             turn_encoding += [token_turn_encoding] * len(token_wordpiece_ids)
+            scenario_gold_encoding += [token_scenario_encoding] * len(token_wordpiece_ids)
             # If we have enough room to add these ids *and also* the end_token ids.
             if len(wordpiece_ids) + len(token_wordpiece_ids) + len(self._end_piece_ids) <= self.max_pieces:
                 # For initial offsets, the current value of ``offset`` is the start of
@@ -116,6 +119,7 @@ class PretrainedBertHistoryAugmentedIndexer(PretrainedBertIndexer):
         wordpiece_ids.extend(self._end_piece_ids)
         history_encoding += [PADDING] * len(self._end_piece_ids)
         turn_encoding += [PADDING] * len(self._end_piece_ids)
+        scenario_gold_encoding += [PADDING] * len(self._end_piece_ids)
         # Constructing `token_type_ids` by `self._separator`
         token_type_ids = _get_token_type_ids(wordpiece_ids,
                                              self._separator_ids)
@@ -135,5 +139,6 @@ class PretrainedBertHistoryAugmentedIndexer(PretrainedBertIndexer):
                 f"{index_name}-type-ids": token_type_ids,
                 "mask": mask,
                 "history_encoding": history_encoding,
-                "turn_encoding": turn_encoding
+                "turn_encoding": turn_encoding,
+                "scenario_gold_encoding": scenario_gold_encoding
         }
