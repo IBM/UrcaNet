@@ -16,7 +16,7 @@ from allennlp.training.metrics.average import Average
 from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
 from allennlp.modules.text_field_embedders import BasicTextFieldEmbedder
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
-from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy, SquadEmAndF1
+from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy, SquadEmAndF1, F1Measure
 
 logger = logging.getLogger(__name__)  # pylint: disable=invalid-name
 
@@ -70,12 +70,14 @@ class BertQA(Model):
     """
     def __init__(self, vocab: Vocabulary,
                  text_field_embedder: TextFieldEmbedder,
+                 text_field_embedder_scenario: TextFieldEmbedder,
                  dropout: float = 0.2,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(BertQA, self).__init__(vocab, regularizer)
 
         self._text_field_embedder = text_field_embedder
+        self._text_field_embedder_scenario = text_field_embedder_scenario
         embedding_dim = self._text_field_embedder.get_output_dim()
         self._action_predictor = torch.nn.Linear(embedding_dim, 4)
         self._passage_token_label_predictor = torch.nn.Linear(embedding_dim, 3)
@@ -88,6 +90,8 @@ class BertQA(Model):
         self._span_loss_metric = Average()
         self._action_loss_metric = Average()
         self._token_loss_metric = Average()
+        self._yes_token_f1 = F1Measure(1)
+        self._no_token_f1 = F1Measure(2)
         if dropout > 0:
             self._dropout = torch.nn.Dropout(p=dropout)
         else:
@@ -95,8 +99,24 @@ class BertQA(Model):
 
         initializer(self)
 
+    def get_passage_representation(self, bert_output, bert_input):
+        # Shape: (batch_size, bert_input_len)
+        input_type_ids = self.wordpiece_to_tokens(bert_input['bert-type-ids'], bert_input['bert-offsets']).float() 
+        # Shape: (batch_size, bert_input_len)
+        input_mask = util.get_text_field_mask(bert_input).float()
+        passage_mask = input_mask - input_type_ids # works only with one [SEP]
+        # Shape: (batch_size, bert_input_len, embedding_dim)
+        passage_representation = bert_output * passage_mask.unsqueeze(2)
+        # Shape: (batch_size, passage_len, embedding_dim)
+        passage_representation = passage_representation[:, passage_mask.sum(dim=0) > 0, :]
+        # Shape: (batch_size, passage_len)        
+        passage_mask = passage_mask[:, passage_mask.sum(dim=0) > 0]
+
+        return passage_representation, passage_mask
+
     def forward(self,  # type: ignore
                 bert_input: Dict[str, torch.LongTensor],
+                bert_input_scenario: Dict[str, torch.LongTensor],
                 span_start: torch.IntTensor = None,
                 span_end: torch.IntTensor = None,
                 metadata: List[Dict[str, Any]] = None,
@@ -152,6 +172,27 @@ class BertQA(Model):
             question.
         """
 
+        bert_output_scenario_long = self._text_field_embedder_scenario(bert_input_scenario)
+
+        offsets = bert_input_scenario['bert-offsets']
+        range_vector = util.get_range_vector(offsets.size(0), device=util.get_device_of(bert_output_scenario_long)).unsqueeze(1)
+        # selected embeddings is also (batch_size * d1 * ... * dn, orig_sequence_length)
+        bert_output_scenario = bert_output_scenario_long[range_vector, offsets]
+
+        passage_representation_scenario, passage_mask_scenario = self.get_passage_representation(bert_output_scenario, bert_input_scenario)
+        # Shape: (batch_size, passage_len, 3)
+        passage_token_logits = self._passage_token_label_predictor(passage_representation_scenario)   
+
+        bert_input['scenario_encoding'] = (passage_token_logits.argmax(dim=-1) + 1) * passage_mask_scenario.long()
+        bert_input_wp_len = bert_input['history_encoding'].size(1)
+        if bert_input['scenario_encoding'].size(1) > bert_input_wp_len:
+            bert_input['scenario_encoding'] = bert_input['scenario_encoding'][:, :bert_input_wp_len]
+        else:
+            batch_size = bert_input['scenario_encoding'].size(0)
+            difference = bert_input_wp_len - bert_input['scenario_encoding'].size(1)
+            zeros = torch.zeros(batch_size, difference, dtype=bert_input['scenario_encoding'].dtype, device=bert_input['scenario_encoding'].device)
+            bert_input['scenario_encoding'] = torch.cat([bert_input['scenario_encoding'], zeros], dim=-1)
+
         # Shape: (batch_size, bert_input_len + 1, embedding_dim)
         bert_output = self._text_field_embedder(bert_input)
         # Shape: (batch_size, embedding_dim)
@@ -162,17 +203,7 @@ class BertQA(Model):
         if bert_input['bert-type-ids'].max() == 0:
             raise ValueError("Incorrect type-id.")
 
-        # Shape: (batch_size, bert_input_len)
-        input_type_ids = self.wordpiece_to_tokens(bert_input['bert-type-ids'], bert_input['bert-offsets']).float() 
-        # Shape: (batch_size, bert_input_len)
-        input_mask = util.get_text_field_mask(bert_input).float()
-        passage_mask = input_mask - input_type_ids # works only with one [SEP]
-        # Shape: (batch_size, bert_input_len, embedding_dim)
-        passage_representation = bert_output * passage_mask.unsqueeze(2)
-        # Shape: (batch_size, passage_len, embedding_dim)
-        passage_representation = passage_representation[:, passage_mask.sum(dim=0) > 0, :]
-        # Shape: (batch_size, passage_len)        
-        passage_mask = passage_mask[:, passage_mask.sum(dim=0) > 0]
+        passage_representation, passage_mask = self.get_passage_representation(bert_output, bert_input)
 
         # Shape: (batch_size, 4)
         action_logits = self._action_predictor(pooled_output)
@@ -183,8 +214,6 @@ class BertQA(Model):
         span_start_logits = span_start_logits.squeeze(-1)
         # Shape: (batch_size, passage_len)        
         span_end_logits = span_end_logits.squeeze(-1)
-        # Shape: (batch_size, passage_len, 3)
-        passage_token_logits = self._passage_token_label_predictor(passage_representation)        
 
         span_start_probs = util.masked_softmax(span_start_logits, passage_mask)
         span_end_probs = util.masked_softmax(span_end_logits, passage_mask)
@@ -198,7 +227,6 @@ class BertQA(Model):
                 "span_end_logits": span_end_logits,
                 "span_end_probs": span_end_probs,
                 "best_span": best_span,
-                "bert_output": bert_output,
                 "pooled_output": pooled_output,
                 "passage_representation": passage_representation,
                 "passage_token_logits": passage_token_logits
@@ -220,12 +248,16 @@ class BertQA(Model):
 
             action_loss = cross_entropy(action_logits, label.squeeze(-1))
             self._action_accuracy(action_logits, label.squeeze(-1))
-            passage_token_loss = cross_entropy(passage_token_logits.view(-1, 3), passage_token_labels.view(-1), ignore_index=-1)
+
+            weights = torch.tensor([1, 50, 50], device=passage_token_logits.device, dtype=torch.float)
+            passage_token_loss = cross_entropy(passage_token_logits.view(-1, 3), passage_token_labels.view(-1), ignore_index=-1, weight=weights)
 
             self._span_loss_metric(span_loss.item())
             self._action_loss_metric(action_loss.item())
             self._token_loss_metric(passage_token_loss.item())
-            output_dict['loss'] = span_loss + 5 * action_loss + passage_token_loss
+            self._yes_token_f1(passage_token_logits, passage_token_labels, passage_mask_scenario)
+            self._no_token_f1(passage_token_logits, passage_token_labels, passage_mask_scenario)
+            output_dict['loss'] = span_loss + action_loss + passage_token_loss
 
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if metadata is not None:
@@ -272,7 +304,9 @@ class BertQA(Model):
         span_loss = self._span_loss_metric.get_metric(reset)
         action_loss = self._action_loss_metric.get_metric(reset)
         token_loss = self._token_loss_metric.get_metric(reset)
-        agg_metric = span_acc + action_acc * 0.45                                            
+        agg_metric = span_acc + action_acc * 0.45
+        _, _, yes_f1 = self._yes_token_f1.get_metric(reset)
+        _, _, no_f1 = self._no_token_f1.get_metric(reset)                                            
         return {
                 'action_acc': action_acc,
                 'start_acc': start_acc,
@@ -281,7 +315,8 @@ class BertQA(Model):
                 'agg_metric': agg_metric,
                 'span_loss': span_loss,
                 'action_loss': action_loss,
-                'token_loss': token_loss
+                'token_loss': token_loss,
+                'macro_token_f1': (yes_f1 + no_f1) / 2
                 }
 
     @staticmethod

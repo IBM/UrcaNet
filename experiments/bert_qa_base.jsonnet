@@ -18,6 +18,8 @@
         "do_lowercase": true,
       },
     },
+    "add_history": false,
+    "add_scenario": false,
   },
   "train_data_path": "sharc1-official/json/sharc_train_split.json",
   "validation_data_path": "sharc1-official/json/sharc_val_split.json",
@@ -34,15 +36,30 @@
         },
       },
       "embedder_to_indexer_map": {
-        "bert": ["bert", "bert-offsets", "bert-type-ids", "history_encoding", "turn_encoding"]
+        "bert": ["bert", "bert-offsets", "bert-type-ids", "history_encoding", "turn_encoding", "scenario_encoding"]
       },
       "allow_unmatched_keys": true
     },
+    "text_field_embedder_scenario": {
+      "type": "basic",
+      "token_embedders": {
+        "bert": {
+          "type": "bert-pretrained-modified",
+          "pretrained_model": "bert-base-uncased",
+          "requires_grad": true,
+          "top_layer_only": true
+        },
+      },
+      "embedder_to_indexer_map": {
+        "bert": ["bert", null, "bert-type-ids"]
+      },
+      "allow_unmatched_keys": true
+    }
   },
   "iterator": {
     "type": "bucket",
     "sorting_keys": [["bert_input", "num_tokens"]],
-    "batch_size": 12
+    "batch_size": 6
   },
 
   "trainer": {
@@ -53,7 +70,7 @@
     "validation_metric": "+agg_metric",
     "cuda_device": 0,
     "optimizer": {
-      "type": "adam",
+      "type": "bert_adam",
       "lr": 1e-5,
     },
   }

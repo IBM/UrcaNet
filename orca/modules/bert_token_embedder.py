@@ -53,7 +53,8 @@ class BertModifiedEmbedder(TokenEmbedder):
                 offsets: torch.LongTensor = None,
                 token_type_ids: torch.LongTensor = None,
                 history_encoding: torch.LongTensor = None,
-                turn_encoding: torch.LongTensor = None) -> torch.Tensor:
+                turn_encoding: torch.LongTensor = None,
+                scenario_encoding: torch.LongTensor = None) -> torch.Tensor:
         """
         Parameters
         ----------
@@ -87,6 +88,8 @@ class BertModifiedEmbedder(TokenEmbedder):
             history_encoding = torch.zeros_like(input_ids)
         if turn_encoding is None:
             turn_encoding = torch.zeros_like(input_ids)
+        if scenario_encoding is None:
+            scenario_encoding = torch.zeros_like(input_ids)
 
         input_mask = (input_ids != 0).long()
 
@@ -96,6 +99,7 @@ class BertModifiedEmbedder(TokenEmbedder):
                                                             token_type_ids=util.combine_initial_dims(token_type_ids),
                                                             history_encoding=util.combine_initial_dims(history_encoding),
                                                             turn_encoding=util.combine_initial_dims(turn_encoding),
+                                                            scenario_encoding=util.combine_initial_dims(scenario_encoding),
                                                             attention_mask=util.combine_initial_dims(input_mask))
         if self._scalar_mix is not None:
             mix = self._scalar_mix(all_encoder_layers, input_mask)

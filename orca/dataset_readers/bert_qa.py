@@ -65,6 +65,8 @@ class BertQAReader(DatasetReader):
                  passage_length_limit: int = None,
                  question_length_limit: int = None,
                  skip_invalid_examples: bool = True,
+                 add_scenario: bool = True,
+                 add_history: bool = True,
                  min_span_length: int = 3) -> None:
         super().__init__(lazy)
         # self._tokenizer = WordTokenizer(word_splitter=BertBasicWordSplitter(do_lower_case=False))
@@ -73,6 +75,8 @@ class BertQAReader(DatasetReader):
         self.passage_length_limit = passage_length_limit
         self.question_length_limit = question_length_limit
         self.skip_invalid_examples = skip_invalid_examples
+        self.add_scenario = add_scenario
+        self.add_history = add_history
         self.min_span_length = min_span_length
 
 
@@ -169,7 +173,6 @@ class BertQAReader(DatasetReader):
         bert_input_tokens = self._tokenizer.tokenize(bert_input)
         for i, token in enumerate(bert_input_tokens[:passage_tokens_len]):
             bert_input_tokens[i] = token._replace(pos_=history_encoding[i], tag_=turn_encoding[i])
-      
         return bert_input_tokens
 
     @overrides
@@ -185,17 +188,25 @@ class BertQAReader(DatasetReader):
                         evidence: List[Dict[str, str]] = None) -> Optional[Instance]:
         
         passage_text = rule_text + ' [SEP]'
-        question_text = question
-        question_text += ' @ss@ ' + scenario
-        question_text += ' @hs@ '
-        for follow_up_qna in history:
-            question_text += '@qs@ '
-            question_text += follow_up_qna['follow_up_question'] + ' '
-            question_text += follow_up_qna['follow_up_answer'] + ' '
-        question_text += '@he@'
+        question_text = question + '@qe@'
+        if self.add_scenario:
+            question_text += ' @ss@ ' + scenario + ' @se'
+        if self.add_history:
+            question_text += ' @hs@ '
+            for follow_up_qna in history:
+                question_text += '@qs@ '
+                question_text += follow_up_qna['follow_up_question'] + ' '
+                question_text += follow_up_qna['follow_up_answer'] + ' '
+            question_text += '@he@'
         
         bert_input = passage_text + ' ' + question_text
         bert_input_tokens = self.get_tokens_with_history_encoding(bert_input, history)
+
+        passage_text_scenario = rule_text + ' [SEP]'
+        question_text_scenario = '@ss@ ' + scenario + ' @se'
+        bert_input_scenario = passage_text_scenario + ' ' + question_text_scenario
+        bert_input_tokens_scenario = self._tokenizer.tokenize(bert_input_scenario)
+
         passage_tokens = self._tokenizer.tokenize(passage_text)
         passage_offsets = [(token.idx, token.idx + len(token.text)) for token in passage_tokens]
 
@@ -205,6 +216,7 @@ class BertQAReader(DatasetReader):
         bert_input_field = TextField(bert_input_tokens, self._token_indexers)
         passage_field = TextField(passage_tokens, self._token_indexers)
         fields['bert_input'] = bert_input_field
+        fields['bert_input_scenario'] = TextField(bert_input_tokens_scenario, self._token_indexers)
         if evidence is not None:
             passage_token_labels = self.get_passage_token_labels(passage_text, evidence)
             fields['passage_token_labels'] = ArrayField(passage_token_labels, padding_value=-1, dtype=numpy.int64)
