@@ -2,10 +2,16 @@
 Usage: python evaluate.py <archived_model> <summary_file_name>
 """
 
-
+from allennlp.common import Params
+from allennlp.data import DatasetReader
+from allennlp.data.vocabulary import Vocabulary
+from allennlp.models.model import Model
 from allennlp.models.archival import load_archive
 from allennlp.predictors import Predictor
+
+import argparse
 import json
+import os
 import pandas as pd
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix
 import torch
@@ -17,6 +23,7 @@ from orca.dataset_readers.bidaf_baseline import BiDAFBaselineReader
 from orca.dataset_readers.bidaf_copynet import BiDAFCopyNetDatasetReader
 from orca.dataset_readers.bidaf_copynet_pipeline import BiDAFCopyNetPipelineDatasetReader
 from orca.dataset_readers.copynet_baseline import CopyNetBaselineDatasetReader
+from orca.dataset_readers.copynet_pipeline import CopyNetPipelineDatasetReader
 from orca.dataset_readers.bidaf_baseline_ft import BiDAFBaselineFTReader
 from orca.dataset_readers.bidaf_copynet_ft import BiDAFCopyNetFTDatasetReader
 from orca.dataset_readers.sharc_net import ShARCNetDatasetReader
@@ -30,6 +37,7 @@ from orca.models.bidaf_copynet_ft import BiDAFCopyNetFTSeq2Seq
 from orca.models.bert_qa import BertQA
 from orca.models.bert_copynet import BertCopyNetFTSeq2Seq
 from orca.models.bert_copynet_dual import BertCopyNetDualSeq2Seq
+from orca.models.copynet_pipeline import CopyNetPipeline
 from orca.models.sharc_net import ShARCNet
 from orca.predictors.sharc_predictor import ShARCPredictor
 from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
@@ -47,12 +55,15 @@ def history_to_string(history):
         first_qa = False
     return output
 
-def get_batch_prediction(predictor, utterances):
+def get_batch_prediction(predictor, utterances, perfect_classification=False):
     model_outputs = predictor.predict_batch_json(utterances)
 
     predicted_answers = []
-    for model_output in model_outputs:
-        predicted_action = model_output.get('label', None)
+    for utterance, model_output in zip(utterances, model_outputs):
+        if perfect_classification:
+            predicted_action = utterance['answer'] if utterance['answer'] in ['Yes', 'No', 'Irrelevant'] else 'More'
+        else:
+            predicted_action = model_output.get('label', None)
         
         if 'best_span_str' in model_output.keys(): # BiDAF
             predicted_answer = model_output['best_span_str']
@@ -96,24 +107,52 @@ def chunks(l, n):
     for i in range(0, len(l), n):
         yield l[i:i + n]
 
+def get_best_predictor(model_dir):
+    params = Params.from_file(os.path.join(model_dir, "config.json"))
+    vocab = Vocabulary.from_files(os.path.join(model_dir, "vocabulary"))
+
+    config = params.duplicate()
+    model = Model.from_params(vocab=vocab, params=config.pop('model'))
+    map_location = None if torch.cuda.is_available() else 'cpu'
+    with open(os.path.join(model_dir, "best.th"), 'rb') as f:
+        model.load_state_dict(torch.load(f))
+    model.eval()
+    if torch.cuda.is_available():
+        model.to("cuda")
+
+    config = params.duplicate()    
+    dataset_reader_params = config["dataset_reader"]
+    dataset_reader = DatasetReader.from_params(dataset_reader_params)
+
+    predictor = Predictor.by_name('sharc_predictor')(model, dataset_reader)
+    return predictor
+
 if __name__ == "__main__":
-    task = 'full' # 'qgen'
+    parser = argparse.ArgumentParser()
+    parser.add_argument("archived_model", help="path to folder containing the archived model")
+    parser.add_argument("summary_file", help="filename for the summary generated")
+    parser.add_argument("--test_dataset", help="path to test dataset", default='./sharc1-official/json/sharc_dev.json')
+    parser.add_argument("--task", help="task to evaluate model on", default='full', choices = ['full', 'qgen'])
+    parser.add_argument("--bleu_pc", help="calculate bleu as if classification is perfect", action="store_true")
+    args = parser.parse_args()
+    
+    task = args.task
+    archived_model = args.archived_model
+    summary_file = args.summary_file
+    dev_dataset = args.test_dataset
 
-    if len(sys.argv) != 3:
-        print('Usage: python evaluate.py <archived_model> <summary_file_name>')
-        sys.exit()
-    archived_model = sys.argv[1]
-    summary_file = sys.argv[2]
-
-    cuda_device = 0 if torch.cuda.is_available() else -1
-    archive = load_archive(archived_model, cuda_device=cuda_device)
-    predictor = Predictor.from_archive(archive, 'sharc_predictor')
+    try:
+        cuda_device = 0 if torch.cuda.is_available() else -1
+        archive = load_archive(archived_model, cuda_device=cuda_device)
+        predictor = Predictor.from_archive(archive, 'sharc_predictor')
+    except FileNotFoundError:
+        print('Model still training. Using best weights..')
+        predictor = get_best_predictor(archived_model) # Assuming archived_model is folder
 
     predicted_answers = []
     gold_answers = []
     summary = ''
     mode_map = {'full': 'combined', 'qgen': 'follow_ups'}
-    dev_dataset = './sharc1-official/json/sharc_dev.json'
 
     with open(dev_dataset, 'r') as dev_file:
         dev_json = json.load(dev_file)
@@ -131,10 +170,26 @@ if __name__ == "__main__":
         gold_answers.append((utterance['utterance_id'], answer))
         predicted_answers.append((utterance['utterance_id'], predicted_answer))
 
+    if args.bleu_pc:
+        predicted_answers_pc = []
+        predicted_answers_pc_ = []
+        for utterances in tqdm(chunks(dev_json, 40)):
+            predicted_answers_pc_ += get_batch_prediction(predictor, utterances, perfect_classification=True)
+        for utterance, predicted_answer in zip(dev_json, predicted_answers_pc_):
+            answer = utterance['answer']
+            scenario = utterance['scenario']
+            if task == 'qgen' and (answer in ['Yes', 'No', 'Irrelevant'] or scenario != ''):
+                continue
+            predicted_answers_pc.append((utterance['utterance_id'], predicted_answer))
+
     make_json(gold_answers, summary_file + '_gold')
     make_json(predicted_answers, summary_file + '_prediction')
     results = evaluator.evaluate(summary_file + '_gold', summary_file + '_prediction', mode=mode_map[task])
     print(prettify_dict(results))
+    if args.bleu_pc:
+        make_json(predicted_answers_pc, summary_file + '_prediction_pc')
+        results_pc = evaluator.evaluate(summary_file + '_gold', summary_file + '_prediction_pc', mode=mode_map[task])
+        print(prettify_dict(results_pc))
     summary = prettify_dict(results) + '\n\n' + summary 
 
     with open(summary_file, 'w', encoding='utf-8') as file:
