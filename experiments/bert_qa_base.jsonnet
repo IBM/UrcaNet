@@ -4,6 +4,7 @@
 {
   "dataset_reader": {
     "type": "bert_qa",
+    "max_context_length": 6,
     "tokenizer": {
       "type": "word",
       "word_splitter": {
@@ -25,7 +26,9 @@
   "validation_data_path": "sharc1-official/json/sharc_val_split.json",
   "model": {
     "type": "bert_qa",
-    "scenario_encoding": true,
+    "use_scenario_encoding": true,
+    "loss_weights": {"span_loss": 1, "action_loss": 8, "sim_loss": 3},
+    "sim_class_weights": [0, 1, 50, 50],
     "text_field_embedder": {
       "type": "basic",
       "token_embedders": {
@@ -41,7 +44,7 @@
       },
       "allow_unmatched_keys": true
     },
-    "text_field_embedder_scenario": {
+    "sim_text_field_embedder": {
       "type": "basic",
       "token_embedders": {
         "bert": {
@@ -60,7 +63,7 @@
   "iterator": {
     "type": "bucket",
     "sorting_keys": [["bert_input", "num_tokens"]],
-    "batch_size": 6
+    "batch_size": 8
   },
 
   "trainer": {
@@ -69,10 +72,11 @@
     "num_epochs": 50,
     "patience": 10,
     "validation_metric": "+agg_metric",
-    "cuda_device": 0,
+    "cuda_device": [0, 1, 2, 3],
     "optimizer": {
-      "type": "adam",
+      "type": "bert_adam",
       "lr": 1e-5,
+      "weight_decay": 0
     },
   }
 }
