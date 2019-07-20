@@ -5,8 +5,9 @@
     "embed_span": true,
     "add_question": true,
     "add_followup_ques": true,
+    "train_using_gold": true,
     "target_namespace": "target_tokens",
-    "span_predictor_model": "/dccstor/sharc/models/bert_qa_base_afwhs",
+    "span_predictor_model": "/dccstor/sharc/models/bert_qa_base_afheteselr5wd2_bak",
     "source_tokenizer": {
       "type": "word",
     },
@@ -64,6 +65,8 @@
     "validation_metric": "+BLEU",
     "optimizer": {
       "type": "adam",
+      "lr": 1e-3,
+      "weight_decay": 1e-3
     }
   }
 }

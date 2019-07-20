@@ -110,7 +110,8 @@ class CopyNetPipelineDatasetReader(DatasetReader):
                  add_rule = True,
                  embed_span = True,
                  add_question = True,
-                 add_followup_ques = True) -> None:
+                 add_followup_ques = True,
+                 train_using_gold = True)-> None:
         super().__init__(lazy)
         self._target_namespace = target_namespace
         self._source_tokenizer = source_tokenizer or WordTokenizer()
@@ -120,6 +121,7 @@ class CopyNetPipelineDatasetReader(DatasetReader):
         self.embed_span = embed_span
         self.add_question = add_question
         self.add_followup_ques = add_followup_ques
+        self.train_using_gold = train_using_gold
         if "tokens" not in self._source_token_indexers or \
                 not isinstance(self._source_token_indexers["tokens"], SingleIdTokenIndexer):
             raise ConfigurationError("CopyNetDatasetReader expects 'source_token_indexers' to contain "
@@ -129,6 +131,7 @@ class CopyNetPipelineDatasetReader(DatasetReader):
         }
 
         archive = load_archive(span_predictor_model)
+        self.dataset_reader = DatasetReader.from_params(archive.config.duplicate()["dataset_reader"])
         self.span_predictor = Predictor.from_archive(archive, 'sharc_predictor')
 
     @overrides
@@ -204,7 +207,17 @@ class CopyNetPipelineDatasetReader(DatasetReader):
         if answer and answer in ['Yes', 'No', 'Irrelevant']:
             return None
         target_string = answer
-        predicted_span, predicted_label = self.get_prediction(rule_text, question, scenario, history) 
+
+        if self.train_using_gold and answer is not None: # i.e. during training and validation
+            predicted_label = answer if answer in ['Yes', 'No', 'Irrelevant'] else 'More'
+            predicted_span_ixs = self.dataset_reader.find_lcs(rule_text, answer, self._source_tokenizer.tokenize)
+            if predicted_span_ixs is None:
+                return None
+            else:
+                rule_offsets = [(token.idx, token.idx + len(token.text)) for token in self._source_tokenizer.tokenize(rule_text)]
+                predicted_span = rule_text[rule_offsets[predicted_span_ixs[0]][0]: rule_offsets[predicted_span_ixs[1]][1]]
+        else:
+            predicted_span, predicted_label = self.get_prediction(rule_text, question, scenario, history)
 
         if self.add_rule:
             if self.embed_span:
