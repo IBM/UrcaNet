@@ -19,30 +19,7 @@ from tqdm import tqdm
 import sys
 
 import evaluator
-from orca.dataset_readers.bidaf_baseline import BiDAFBaselineReader
-from orca.dataset_readers.bidaf_copynet import BiDAFCopyNetDatasetReader
-from orca.dataset_readers.bidaf_copynet_pipeline import BiDAFCopyNetPipelineDatasetReader
-from orca.dataset_readers.copynet_baseline import CopyNetBaselineDatasetReader
-from orca.dataset_readers.copynet_pipeline import CopyNetPipelineDatasetReader
-from orca.dataset_readers.bidaf_baseline_ft import BiDAFBaselineFTReader
-from orca.dataset_readers.bidaf_copynet_ft import BiDAFCopyNetFTDatasetReader
-from orca.dataset_readers.sharc_net import ShARCNetDatasetReader
-from orca.dataset_readers.bert_qa import BertQAReader
-from orca.dataset_readers.bert_copynet import BertCopyNetDatasetReader
-from orca.dataset_readers.bert_copynet_dual import BertCopyNetDualDatasetReader
-from orca.models.bidaf_modified import BidirectionalAttentionFlowModified
-from orca.models.bidaf_copynet import BiDAFCopyNetSeq2Seq
-from orca.models.bidaf_ft import BidirectionalAttentionFlowFT
-from orca.models.bidaf_copynet_ft import BiDAFCopyNetFTSeq2Seq
-from orca.models.bert_qa import BertQA
-from orca.models.bert_copynet import BertCopyNetFTSeq2Seq
-from orca.models.bert_copynet_dual import BertCopyNetDualSeq2Seq
-from orca.models.copynet_pipeline import CopyNetPipeline
-from orca.models.sharc_net import ShARCNet
-from orca.predictors.sharc_predictor import ShARCPredictor
-from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
-from orca.modules.bert_indexer import PretrainedBertHistoryAugmentedIndexer
-from orca.modules.word_splitter import SpacyWordSplitterModified
+import orca
 
 def history_to_string(history):
     output = ''
@@ -146,8 +123,12 @@ if __name__ == "__main__":
         archive = load_archive(archived_model, cuda_device=cuda_device)
         predictor = Predictor.from_archive(archive, 'sharc_predictor')
     except FileNotFoundError:
-        print('Model still training. Using best weights..')
-        predictor = get_best_predictor(archived_model) # Assuming archived_model is folder
+        print('Archived model not found. Trying to load best weights..')
+        try:
+            predictor = get_best_predictor(archived_model) # Assuming archived_model is folder
+        except FileNotFoundError:
+            print('Couldn\'t found best weights. Quitting.')
+            sys.exit()
 
     predicted_answers = []
     gold_answers = []
