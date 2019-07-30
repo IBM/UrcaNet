@@ -13,7 +13,9 @@
 > wget https://sharc-data.github.io/data/sharc1-official.zip     
 > unzip sharc1-official.zip
 
-# Experiments
+Also download CoQA and QuAC data and put it in `coqa` and `quac` folder respectively.
+
+# Experiments (old)
 
 ## Full Task
 
