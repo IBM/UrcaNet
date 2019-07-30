@@ -13,7 +13,6 @@ from allennlp.modules import Highway
 from allennlp.modules import Seq2SeqEncoder, SimilarityFunction, TimeDistributed, TextFieldEmbedder
 from allennlp.modules.matrix_attention.legacy_matrix_attention import LegacyMatrixAttention
 from allennlp.training.metrics.average import Average
-from orca.modules.bert_token_embedder import PretrainedBertModifiedEmbedder
 from allennlp.modules.text_field_embedders import BasicTextFieldEmbedder
 from allennlp.nn import util, InitializerApplicator, RegularizerApplicator
 from allennlp.training.metrics import BooleanAccuracy, CategoricalAccuracy, SquadEmAndF1, F1Measure
@@ -73,17 +72,24 @@ class BertQA(Model):
                  sim_text_field_embedder: TextFieldEmbedder,
                  loss_weights: Dict,
                  sim_class_weights: List,
+                 pretrained_sim_path: str = None,
                  use_scenario_encoding: bool = True,
+                 sim_pretraining: bool = False,
                  dropout: float = 0.2,
                  initializer: InitializerApplicator = InitializerApplicator(),
                  regularizer: Optional[RegularizerApplicator] = None) -> None:
         super(BertQA, self).__init__(vocab, regularizer)
 
         self._text_field_embedder = text_field_embedder
-        self._sim_text_field_embedder = sim_text_field_embedder
+        if use_scenario_encoding:
+            self._sim_text_field_embedder = sim_text_field_embedder
         self.loss_weights = loss_weights
         self.sim_class_weights = sim_class_weights
         self.use_scenario_encoding = use_scenario_encoding
+        self.sim_pretraining = sim_pretraining
+
+        if self.sim_pretraining and not self.use_scenario_encoding:
+            raise ValueError("When pretraining Scenario Interpretation Module, you should use it.")
 
         embedding_dim = self._text_field_embedder.get_output_dim()
         self._action_predictor = torch.nn.Linear(embedding_dim, 4)
@@ -100,6 +106,12 @@ class BertQA(Model):
         self._sim_yes_f1 = F1Measure(2)
         self._sim_no_f1 = F1Measure(3)
 
+        if use_scenario_encoding and pretrained_sim_path is not None:
+            logger.info("Loading pretrained model..")
+            self.load_state_dict(torch.load(pretrained_sim_path))
+            for param in self._sim_text_field_embedder.parameters():
+                param.requires_grad = False
+
         if dropout > 0:
             self._dropout = torch.nn.Dropout(p=dropout)
         else:
@@ -109,7 +121,8 @@ class BertQA(Model):
 
     def get_passage_representation(self, bert_output, bert_input):
         # Shape: (batch_size, bert_input_len)
-        input_type_ids = self.wordpiece_to_tokens(bert_input['bert-type-ids'], bert_input['bert-offsets']).float() 
+        input_type_ids = self.wordpiece_to_tokens(bert_input['bert-type-ids'], bert_input['bert-offsets'],
+                         self._text_field_embedder._token_embedders['bert']).float() 
         # Shape: (batch_size, bert_input_len)
         input_mask = util.get_text_field_mask(bert_input).float()
         passage_mask = input_mask - input_type_ids # works only with one [SEP]
@@ -200,19 +213,29 @@ class BertQA(Model):
             # Shape: (batch_size, passage_len_wp, 4)
             sim_token_logits_wp = self._sim_token_label_predictor(sim_passage_representation_wp)
 
-            # Shape: (batch_size, passage_len_wp)
-            bert_input['scenario_encoding'] = (sim_token_logits_wp.argmax(dim=2)) * sim_passage_mask_wp.long()
-            # Shape: (batch_size, bert_input_len_wp)
-            bert_input_wp_len = bert_input['history_encoding'].size(1)
-            if bert_input['scenario_encoding'].size(1) > bert_input_wp_len:
+            if span_start is not None: # during training and validation 
+                class_weights = torch.tensor(self.sim_class_weights, device=sim_token_logits_wp.device, dtype=torch.float)
+                sim_loss = cross_entropy(sim_token_logits_wp.view(-1, 4), sim_passage_token_labels_wp.view(-1), ignore_index=0, weight=class_weights)
+                self._sim_loss_metric(sim_loss.item())
+                self._sim_yes_f1(sim_token_logits_wp, sim_passage_token_labels_wp, sim_passage_mask_wp)
+                self._sim_no_f1(sim_token_logits_wp, sim_passage_token_labels_wp, sim_passage_mask_wp)
+                if self.sim_pretraining:
+                    return {'loss': sim_loss}
+    
+            if not self.sim_pretraining:
+                # Shape: (batch_size, passage_len_wp)
+                bert_input['scenario_encoding'] = (sim_token_logits_wp.argmax(dim=2)) * sim_passage_mask_wp.long()
                 # Shape: (batch_size, bert_input_len_wp)
-                bert_input['scenario_encoding'] = bert_input['scenario_encoding'][:, :bert_input_wp_len]
-            else:
-                batch_size = bert_input['scenario_encoding'].size(0)
-                difference = bert_input_wp_len - bert_input['scenario_encoding'].size(1)
-                zeros = torch.zeros(batch_size, difference, dtype=bert_input['scenario_encoding'].dtype, device=bert_input['scenario_encoding'].device)
-                # Shape: (batch_size, bert_input_len_wp)
-                bert_input['scenario_encoding'] = torch.cat([bert_input['scenario_encoding'], zeros], dim=1)
+                bert_input_wp_len = bert_input['history_encoding'].size(1)
+                if bert_input['scenario_encoding'].size(1) > bert_input_wp_len:
+                    # Shape: (batch_size, bert_input_len_wp)
+                    bert_input['scenario_encoding'] = bert_input['scenario_encoding'][:, :bert_input_wp_len]
+                else:
+                    batch_size = bert_input['scenario_encoding'].size(0)
+                    difference = bert_input_wp_len - bert_input['scenario_encoding'].size(1)
+                    zeros = torch.zeros(batch_size, difference, dtype=bert_input['scenario_encoding'].dtype, device=bert_input['scenario_encoding'].device)
+                    # Shape: (batch_size, bert_input_len_wp)
+                    bert_input['scenario_encoding'] = torch.cat([bert_input['scenario_encoding'], zeros], dim=1)
 
         # Shape: (batch_size, bert_input_len + 1, embedding_dim)
         bert_output = self._text_field_embedder(bert_input)
@@ -278,14 +301,6 @@ class BertQA(Model):
             self._action_loss_metric(action_loss.item())
             output_dict['loss'] = self.loss_weights['span_loss'] * span_loss + self.loss_weights['action_loss'] * action_loss
 
-            if self.use_scenario_encoding:
-                class_weights = torch.tensor(self.sim_class_weights, device=sim_token_logits_wp.device, dtype=torch.float)
-                sim_loss = cross_entropy(sim_token_logits_wp.view(-1, 4), sim_passage_token_labels_wp.view(-1), ignore_index=0, weight=class_weights)
-                self._sim_loss_metric(sim_loss.item())
-                self._sim_yes_f1(sim_token_logits_wp, sim_passage_token_labels_wp, sim_passage_mask_wp)
-                self._sim_no_f1(sim_token_logits_wp, sim_passage_token_labels_wp, sim_passage_mask_wp)
-                output_dict['loss'] += self.loss_weights['sim_loss'] * sim_loss
-
         # Compute the EM and F1 on SQuAD and add the tokenized input to the output.
         if not self.training: # true during validation and test
             output_dict['best_span_str'] = []
@@ -315,6 +330,14 @@ class BertQA(Model):
         return output_dict
 
     def get_metrics(self, reset: bool = False) -> Dict[str, float]:
+        if self.use_scenario_encoding:
+            sim_loss = self._sim_loss_metric.get_metric(reset)
+            _, _, yes_f1 = self._sim_yes_f1.get_metric(reset)
+            _, _, no_f1 = self._sim_no_f1.get_metric(reset) 
+        
+        if self.sim_pretraining:
+            return {'sim_macro_f1': (yes_f1 + no_f1) / 2}
+
         try:
             action_acc = self._action_accuracy.get_metric(reset)
         except ZeroDivisionError:
@@ -335,23 +358,22 @@ class BertQA(Model):
         exact_match, f1_score = self._squad_metrics.get_metric(reset)
         span_loss = self._span_loss_metric.get_metric(reset)
         action_loss = self._action_loss_metric.get_metric(reset)
-        sim_loss = self._sim_loss_metric.get_metric(reset)
-        _, _, yes_f1 = self._sim_yes_f1.get_metric(reset)
-        _, _, no_f1 = self._sim_no_f1.get_metric(reset) 
         agg_metric = span_acc + action_acc * 0.45                                           
-        return {
-                'action_acc': action_acc,
-                'start_acc': start_acc,
-                'end_acc': end_acc,
-                'span_acc': span_acc,
-                'em': exact_match,
-                'f1': f1_score,
-                'span_loss': span_loss,
-                'action_loss': action_loss,
-                'sim_loss': sim_loss,
-                'sim_macro_f1': (yes_f1 + no_f1) / 2,
-                'agg_metric': agg_metric,
-                }
+    
+        metrics = {'action_acc': action_acc,
+                   'span_acc': span_acc,
+                   'span_loss': span_loss,
+                   'action_loss': action_loss,
+                   'agg_metric': agg_metric}
+
+        if self.use_scenario_encoding:
+            metrics['sim_macro_f1'] = (yes_f1 + no_f1) / 2
+    
+        if not self.training: # during validation
+            metrics['em'] = exact_match
+            metrics['f1'] = f1_score  
+
+        return metrics
 
     @staticmethod
     def get_best_span(span_start_logits: torch.Tensor, span_end_logits: torch.Tensor) -> torch.Tensor:
@@ -379,8 +401,13 @@ class BertQA(Model):
         span_end_indices = best_spans % passage_length
         return torch.stack([span_start_indices, span_end_indices], dim=-1)
 
-    def wordpiece_to_tokens(self, tensor_, offsets):
-        "Converts (bsz, seq_len_wp) to (bsz, seq_len) by indexing."        
+    def wordpiece_to_tokens(self, tensor_, offsets, embedder):
+        "Converts (bsz, seq_len_wp) to (bsz, seq_len) by indexing."    
+    
+        if tensor_.size(1) > embedder.max_pieces: # Recombine if we had used sliding window approach
+            select_indices = embedder.indices_to_select(full_seq_len=tensor_.size(1))
+            tensor_ = tensor_[:, select_indices]
+
         batch_size = tensor_.size(0)
         range_vector = util.get_range_vector(batch_size, device=util.get_device_of(tensor_)).unsqueeze(1)
         reduced_tensor = tensor_[range_vector, offsets]

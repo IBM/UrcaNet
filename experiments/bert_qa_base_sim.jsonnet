@@ -29,7 +29,7 @@
     "use_scenario_encoding": true,
     "loss_weights": {"span_loss": 1, "action_loss": 5},
     "sim_class_weights": [0, 1, 50, 50],
-    "sim_pretraining": false,
+    "sim_pretraining": true,
     "text_field_embedder": {
       "type": "basic",
       "token_embedders": {
@@ -64,7 +64,7 @@
   "iterator": {
     "type": "bucket",
     "sorting_keys": [["bert_input", "num_tokens"]],
-    "batch_size": 8
+    "batch_size": 16
   },
 
   "trainer": {
@@ -72,12 +72,12 @@
     "minimal_save": true,
     "num_epochs": 50,
     "patience": 10,
-    "validation_metric": "+agg_metric",
+    "validation_metric": "+sim_macro_f1",
     "cuda_device": 0,
     "optimizer": {
       "type": "bert_adam",
-      "lr": 1e-5,
-      "weight_decay": 1e-2,
+      "lr": 3e-6,
+      "weight_decay": 1e-4,
       "parameter_groups": [
         [["bias", "LayerNorm.bias", "LayerNorm.weight"], {"weight_decay": 0}],
       ]

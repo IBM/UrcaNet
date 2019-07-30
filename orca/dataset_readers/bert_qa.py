@@ -176,6 +176,8 @@ class BertQAReader(DatasetReader):
         if add_history_encoding or add_turn_encoding:
             turn_recency = 1
             for followup_qa in reversed(history):
+                if 'follow_up_question' not in followup_qa or 'follow_up_answer' not in followup_qa: # dataset issue
+                    continue 
                 followup_ques = followup_qa['follow_up_question']
                 followup_ans = followup_qa['follow_up_answer']
                 token_span = self.find_lcs(passage_text, followup_ques, tokenizer_fn=self._tokenizer.tokenize)
@@ -184,13 +186,15 @@ class BertQAReader(DatasetReader):
                     end_ix = token_span[1] + 1 # exclusive
                     if followup_ans == 'Yes':
                         history_encoding[start_ix: end_ix] = ANSWERED_YES
-                    elif followup_ans == 'No':
+                    else: 
                         history_encoding[start_ix: end_ix] = ANSWERED_NO
                     turn_encoding[start_ix: end_ix] = min(turn_recency, self.max_context_length)
-                    turn_recency += 1 
+                turn_recency += 1 
         
         if add_scenario_encoding:
             for followup_qa in evidence:
+                if 'follow_up_question' not in followup_qa or 'follow_up_answer' not in followup_qa: # dataset issue
+                    continue 
                 followup_ques = followup_qa['follow_up_question']
                 followup_ans = followup_qa['follow_up_answer']
                 token_span = self.find_lcs(passage_text, followup_ques, tokenizer_fn=self._tokenizer.tokenize)
@@ -199,7 +203,7 @@ class BertQAReader(DatasetReader):
                     end_ix = token_span[1] + 1 # exclusive
                     if followup_ans == 'Yes':
                         scenario_encoding[start_ix: end_ix] = ANSWERED_YES
-                    elif followup_ans == 'No':
+                    else:
                         scenario_encoding[start_ix: end_ix] = ANSWERED_NO
     
         bert_input_tokens = self._tokenizer.tokenize(bert_input)
@@ -233,7 +237,7 @@ class BertQAReader(DatasetReader):
             question_text += ' @ss@ ' + scenario + ' @se'
         if self.add_history:
             question_text += ' @hs@'
-            for follow_up_qna in history:
+            for follow_up_qna in history[:self.max_context_length]:
                 question_text += ' @qs@'
                 question_text += ' ' + follow_up_qna['follow_up_question']
                 question_text += ' ' + follow_up_qna['follow_up_answer']
@@ -247,10 +251,12 @@ class BertQAReader(DatasetReader):
         question_text_sim = '@ss@ ' + scenario + ' @se@'
         sim_bert_input = passage_text_sim + ' ' + question_text_sim
         if evidence is not None:
-            sim_bert_input_tokens = self.tokenize_and_add_encodings(sim_bert_input, passage_text,
+            sim_bert_input_tokens = self.tokenize_and_add_encodings(sim_bert_input, passage_text_sim,
                                                                     evidence=evidence, add_scenario_encoding=True)
         else:
             sim_bert_input_tokens = self._tokenizer.tokenize(sim_bert_input)
+
+        assert passage_text == passage_text_sim
 
         passage_tokens = self._tokenizer.tokenize(passage_text)
         passage_field = TextField(passage_tokens, self._token_indexers)
