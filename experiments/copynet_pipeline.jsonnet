@@ -3,7 +3,7 @@
     "type": "copynet_pipeline",
     "add_rule": true,
     "embed_span": true,
-    "add_question": true,
+    "add_question": false,
     "add_followup_ques": true,
     "train_using_gold": true,
     "target_namespace": "target_tokens",

@@ -111,6 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("--test_dataset", help="path to test dataset", default='./sharc1-official/json/sharc_dev.json')
     parser.add_argument("--task", help="task to evaluate model on", default='full', choices = ['full', 'qgen'])
     parser.add_argument("--bleu_pc", help="calculate bleu as if classification is perfect", action="store_true")
+    parser.add_argument("--span_predictor_model", help="specify location of span_predictor_model in case of pipeline")
     args = parser.parse_args()
     
     task = args.task
@@ -127,8 +128,13 @@ if __name__ == "__main__":
         try:
             predictor = get_best_predictor(archived_model) # Assuming archived_model is folder
         except FileNotFoundError:
-            print('Couldn\'t found best weights. Quitting.')
+            print('Couldn\'t find best weights. Quitting.')
             sys.exit()
+    
+    if args.span_predictor_model is not None:
+        archive = load_archive(args.span_predictor_model)
+        predictor._dataset_reader.dataset_reader = DatasetReader.from_params(archive.config.duplicate()["dataset_reader"])
+        predictor._dataset_reader.span_predictor = Predictor.from_archive(archive, 'sharc_predictor')
 
     predicted_answers = []
     gold_answers = []
