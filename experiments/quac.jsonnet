@@ -66,7 +66,8 @@
   "iterator": {
     "type": "bucket",
     "sorting_keys": [["bert_input", "num_tokens"]],
-    "batch_size": 2
+    "batch_size": 1,
+    "biggest_batch_first": true
   },
 
   "trainer": {
@@ -75,7 +76,7 @@
     "num_epochs": 50,
     "patience": 10,
     "validation_metric": "+f1",
-    "cuda_device": 0,
+    "cuda_device": [0, 1, 2, 3],
     "optimizer": {
       "type": "bert_adam",
       "lr": 1e-5,

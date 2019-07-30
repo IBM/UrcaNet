@@ -21,7 +21,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('input_file', help='path to input file in QuAC format')
     parser.add_argument('output_file', help='path where to save file in ShARC format')
-    parser.add_argument('--max_word_pieces', type=int, default='3000', 
+    parser.add_argument('--max_word_pieces', type=int, default='600', 
                         help='max word pieces (including both rule and question) to keep')
     parser.add_argument("--debug", help="save only few examples", action="store_true")
 
