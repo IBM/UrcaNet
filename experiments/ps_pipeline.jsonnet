@@ -69,8 +69,8 @@
     "validation_metric": "+agg_bleu",
     "optimizer": {
       "type": "adam",
-      "lr": 1e-3,
-      "weight_decay": 1e-3
+      "lr": 1e-4,
+      "weight_decay": 1e-4
     }
   }
 }

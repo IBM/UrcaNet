@@ -121,8 +121,9 @@ class BertQA(Model):
 
     def get_passage_representation(self, bert_output, bert_input):
         # Shape: (batch_size, bert_input_len)
-        input_type_ids = self.wordpiece_to_tokens(bert_input['bert-type-ids'], bert_input['bert-offsets'],
-                         self._text_field_embedder._token_embedders['bert']).float() 
+        input_type_ids = self.get_input_type_ids(bert_input['bert-type-ids'],
+                                                 bert_input['bert-offsets'],
+                                                 self._text_field_embedder._token_embedders['bert']).float() 
         # Shape: (batch_size, bert_input_len)
         input_mask = util.get_text_field_mask(bert_input).float()
         passage_mask = input_mask - input_type_ids # works only with one [SEP]
@@ -401,14 +402,16 @@ class BertQA(Model):
         span_end_indices = best_spans % passage_length
         return torch.stack([span_start_indices, span_end_indices], dim=-1)
 
-    def wordpiece_to_tokens(self, tensor_, offsets, embedder):
-        "Converts (bsz, seq_len_wp) to (bsz, seq_len) by indexing."    
-    
-        if tensor_.size(1) > embedder.max_pieces: # Recombine if we had used sliding window approach
-            select_indices = embedder.indices_to_select(full_seq_len=tensor_.size(1))
-            tensor_ = tensor_[:, select_indices]
+    def get_input_type_ids(self, type_ids, offsets, embedder):
+        "Converts (bsz, seq_len_wp) to (bsz, seq_len_wp) by indexing."
+        batch_size = type_ids.size(0)
+        full_seq_len = type_ids.size(1)
+        if full_seq_len > embedder.max_pieces: # Recombine if we had used sliding window approach
+            assert batch_size == 1 and type_ids.max() > 0 
+            num_question_tokens = type_ids[0][:embedder.max_pieces].nonzero().size(0)
+            select_indices = embedder.indices_to_select(full_seq_len, num_question_tokens)
+            type_ids = type_ids[:, select_indices]
 
-        batch_size = tensor_.size(0)
-        range_vector = util.get_range_vector(batch_size, device=util.get_device_of(tensor_)).unsqueeze(1)
-        reduced_tensor = tensor_[range_vector, offsets]
-        return reduced_tensor
+        range_vector = util.get_range_vector(batch_size, device=util.get_device_of(type_ids)).unsqueeze(1)
+        type_ids = type_ids[range_vector, offsets]
+        return type_ids

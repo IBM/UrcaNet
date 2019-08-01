@@ -66,6 +66,8 @@ class BertQAReader(DatasetReader):
                  lazy: bool = False,
                  add_scenario: bool = True,
                  add_history: bool = True,
+                 fuzzy_matching: bool = True,
+                 filter_stop_words: bool = True,
                  max_context_length = 6) -> None:
         super().__init__(lazy)
         self._tokenizer = tokenizer
@@ -73,6 +75,8 @@ class BertQAReader(DatasetReader):
         self.add_scenario = add_scenario
         self.add_history = add_history
         self.max_context_length = max_context_length
+        self.fuzzy_matching = fuzzy_matching
+        self.filter_stop_words = filter_stop_words # while finding span
         self.lcs_cache = {}
 
     @overrides
@@ -126,7 +130,7 @@ class BertQAReader(DatasetReader):
         If filter_stop_words is True, in case the found span contains only stop words, None is returned. 
         """ 
 
-        args = (text1, text2, tokenizer_fn, min_length, fuzzy_matching)
+        args = (text1, text2, tokenizer_fn, min_length, fuzzy_matching, filter_stop_words)
         if args in self.lcs_cache:
             return self.lcs_cache[args] 
 
@@ -147,9 +151,9 @@ class BertQAReader(DatasetReader):
                     end_token_ix = self.find_closest_element_ix([offset[1] for offset in text1_offsets], regex_match.span()[1])
                     regex_span = start_token_ix, end_token_ix
                     
-        if regex_span is not None and not self.all_stop_words(text1_tokens, regex_span):
+        if regex_span is not None and not (filter_stop_words and self.all_stop_words(text1_tokens, regex_span)):
             self.lcs_cache[args] = regex_span
-        elif lcs_match.size > 0 and not self.all_stop_words(text1_tokens, lcs_span):
+        elif lcs_match.size > 0 and not (filter_stop_words and self.all_stop_words(text1_tokens, lcs_span)):
             self.lcs_cache[args] = lcs_span
         else:
             self.lcs_cache[args] = None
@@ -180,7 +184,8 @@ class BertQAReader(DatasetReader):
                     continue 
                 followup_ques = followup_qa['follow_up_question']
                 followup_ans = followup_qa['follow_up_answer']
-                token_span = self.find_lcs(passage_text, followup_ques, tokenizer_fn=self._tokenizer.tokenize)
+                token_span = self.find_lcs(passage_text, followup_ques, tokenizer_fn=self._tokenizer.tokenize,
+                                           fuzzy_matching=self.fuzzy_matching, filter_stop_words=self.filter_stop_words)
                 if token_span is not None:
                     start_ix = token_span[0]
                     end_ix = token_span[1] + 1 # exclusive
@@ -197,7 +202,8 @@ class BertQAReader(DatasetReader):
                     continue 
                 followup_ques = followup_qa['follow_up_question']
                 followup_ans = followup_qa['follow_up_answer']
-                token_span = self.find_lcs(passage_text, followup_ques, tokenizer_fn=self._tokenizer.tokenize)
+                token_span = self.find_lcs(passage_text, followup_ques, tokenizer_fn=self._tokenizer.tokenize,
+                                           fuzzy_matching=self.fuzzy_matching, filter_stop_words=self.filter_stop_words)
                 if token_span is not None:
                     start_ix = token_span[0]
                     end_ix = token_span[1] + 1 # exclusive
@@ -231,15 +237,17 @@ class BertQAReader(DatasetReader):
                         answer: str = None,
                         evidence: List[Dict[str, str]] = None) -> Optional[Instance]:
         
+        history = history[-self.max_context_length:]
+
         passage_text = rule + ' [SEP]'
         question_text = question + ' @qe@'
         if self.add_scenario:
             question_text += ' @ss@ ' + scenario + ' @se'
         if self.add_history:
             question_text += ' @hs@'
-            for follow_up_qna in history[:self.max_context_length]:
+            for follow_up_qna in history:
                 question_text += ' @qs@'
-                question_text += ' ' + follow_up_qna['follow_up_question']
+                question_text += ' ' + follow_up_qna['follow_up_question'] + ' @hqe@'
                 question_text += ' ' + follow_up_qna['follow_up_answer']
             question_text += ' @he@'
         
@@ -276,7 +284,8 @@ class BertQAReader(DatasetReader):
                 fields['span_start'] = IndexField(0, passage_field) # This doesn't matter as we mask the loss.
                 fields['span_end'] = IndexField(0, passage_field)
             else:
-                token_span = self.find_lcs(passage_text, answer, tokenizer_fn=self._tokenizer.tokenize)
+                token_span = self.find_lcs(passage_text, answer, tokenizer_fn=self._tokenizer.tokenize,
+                                           fuzzy_matching=self.fuzzy_matching, filter_stop_words=self.filter_stop_words)
                 if token_span is None:
                     return None
                 fields['span_start'] = IndexField(token_span[0], passage_field)

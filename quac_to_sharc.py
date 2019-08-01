@@ -50,16 +50,16 @@ if __name__ == "__main__":
                 utterances.append({'snippet': rule,
                                    'question': question,
                                    'scenario': '',
-                                   'history': history,
+                                   'history': history.copy(),
                                    'evidence': [],
                                    'answer': answer})
                 followup_qa = {}
                 followup_qa['follow_up_question'] = answer
                 followup_qa['follow_up_answer'] = question
                 history.append(followup_qa)
-        if args.debug:
+        if args.debug and len(utterances) > 1000:
             break
-    print(f'Skipped {skipped * 100 / total:.2f}% of instances.')
+    print(f'Skipped {skipped * 100 / total:.2f}% of instances. Total utterances: {len(utterances)}.')
 
     with open(args.output_file, 'w') as file:
         json.dump(utterances, file)

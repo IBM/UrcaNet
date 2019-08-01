@@ -5,6 +5,8 @@
   "dataset_reader": {
     "type": "bert_qa",
     "max_context_length": 6,
+    "fuzzy_matching": false,
+    "filter_stop_words": false,
     "tokenizer": {
       "type": "word",
       "word_splitter": {
@@ -21,7 +23,7 @@
       },
     },
     "add_history": true,
-    "add_scenario": true,
+    "add_scenario": false,
     "lazy": true
   },
   "train_data_path": "quac/sharc_format_train.json",

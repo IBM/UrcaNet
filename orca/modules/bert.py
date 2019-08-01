@@ -50,7 +50,9 @@ class BertModelModified(BertPreTrainedModel):
         self.embeddings = BertEmbeddingsModified(config)
         self.encoder = BertEncoder(config)
         self.pooler = BertPooler(config)
-        self.apply(self.init_bert_weights)
+        self.apply(self.init_bert_weights) 
+        self.embeddings.history_embeddings.weight[0].data.zero_() # self.embeddings.history_embeddings.padding_idx
+        self.embeddings.turn_embeddings.weight[0].data.zero_() # self.embeddings.turn_embeddings.padding_idx
 
     def forward(self, input_ids, token_type_ids=None, history_encoding=None, turn_encoding=None, scenario_encoding=None, attention_mask=None, output_all_encoded_layers=True):
         if attention_mask is None:

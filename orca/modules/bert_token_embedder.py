@@ -82,8 +82,11 @@ class BertEmbedderModified(TokenEmbedder):
         ids = torch.cat(split_ids, dim=0)
         return ids
 
-    def indices_to_select(self, full_seq_len):
-        """Returns indices to select to create tensor with number of wordpieces from the windowed form."""   
+    def indices_to_select(self, full_seq_len, num_question_tokens):
+        """
+        Returns indices to select to create tensor with number of wordpieces from the windowed form.
+        question_tokens is the number of tokens in question including the last [SEP] token.
+        """   
             
         # Next, select indices of the sequence such that it will result in embeddings representing the original
         # sentence. To capture maximal context, the indices will be the middle part of each embedded window
@@ -95,7 +98,9 @@ class BertEmbedderModified(TokenEmbedder):
 
         # Find the stride as half the max pieces, ignoring the special start and end tokens
         # Calculate an offset to extract the centermost embeddings of each window
-        stride = (self.max_pieces - self.num_start_tokens - self.num_end_tokens) // 2
+
+        num_end_tokens = num_question_tokens + 1
+        stride = (self.max_pieces - self.num_start_tokens - num_end_tokens) // 2
         stride_offset = stride // 2 + self.num_start_tokens
 
         first_window = list(range(stride_offset))
@@ -199,7 +204,9 @@ class BertEmbedderModified(TokenEmbedder):
             # First, unpack the output embeddings into one long sequence again
             unpacked_embeddings = torch.split(all_encoder_layers, batch_size, dim=1)
             unpacked_embeddings = torch.cat(unpacked_embeddings, dim=2)
-            select_indices = self.indices_to_select(full_seq_len)
+            assert batch_size == 1 and token_type_ids.max() > 0 
+            num_question_tokens = token_type_ids[0].nonzero().size(0)
+            select_indices = self.indices_to_select(full_seq_len, num_question_tokens)
             initial_dims.append(len(select_indices))
             recombined_embeddings = unpacked_embeddings[:, :, select_indices]
         else:
@@ -225,7 +232,7 @@ class BertEmbedderModified(TokenEmbedder):
             # offsets is (batch_size, d1, ..., dn, orig_sequence_length)
             offsets2d = util.combine_initial_dims(offsets)
             # now offsets is (batch_size * d1 * ... * dn, orig_sequence_length)
-            zeros = torch.ones(offsets2d.size(0), 1, dtype=offsets2d.dtype, device=offsets2d.device)
+            zeros = torch.zeros(offsets2d.size(0), 1, dtype=offsets2d.dtype, device=offsets2d.device)
             offsets2d = torch.cat([zeros, offsets2d], dim=-1)
             # now offsets is (batch_size * d1 * ... * dn, orig_sequence_length + 1)
             range_vector = util.get_range_vector(offsets2d.size(0),
