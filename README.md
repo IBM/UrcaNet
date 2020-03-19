@@ -1,6 +1,9 @@
-# Prerequisites
+# UrcaNet
+Source code for Neural Conversational QA: Learning to Reason v.s. Exploiting Patterns (https://arxiv.org/abs/1909.03759)
 
-## Clone repository and install AllenNLP
+## Prerequisites
+
+### Clone repository and install AllenNLP
 
 ```bash
 conda create -n orca python=3.6  
@@ -11,7 +14,7 @@ pip install -r requirements.txt
 python -m spacy download en_core_web_md
 ```
 
-## Download data
+### Download data
 ```bash
 wget https://sharc-data.github.io/data/sharc1-official.zip     
 unzip sharc1-official.zip
@@ -19,7 +22,7 @@ unzip sharc1-official.zip
 
 Also download CoQA and QuAC data and put it in `coqa` and `quac` folder respectively.
 
-# Experiments
+## Experiments
 
 ## Full Task
 
