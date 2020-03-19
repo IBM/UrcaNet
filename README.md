@@ -4,8 +4,8 @@
 
 > conda create -n orca python=3.6  
 > source activate orca  
-> git clone https://github.ibm.com/abhis200/ShARC-task.git   
-> cd ShARC-task  
+> git clone https://github.com/IBM/UrcaNet.git   
+> cd UrcaNet  
 > pip install -r requirements.txt
 > python -m spacy download en_core_web_md
 
@@ -15,7 +15,7 @@
 
 Also download CoQA and QuAC data and put it in `coqa` and `quac` folder respectively.
 
-# Experiments (old)
+# Experiments
 
 ## Full Task
 
