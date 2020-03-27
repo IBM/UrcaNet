@@ -130,7 +130,6 @@ dmypy.json
 !.vscode/extensions.json
 
 # Project Specific
-*.ipynb
 .DS_Store
 sharc1-official
 .vscode/settings.json
