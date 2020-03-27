@@ -71,3 +71,11 @@ python evaluate.py ./temp/bidaf_copynet/model.tar.gz bc
 allennlp train experiments/bidaf_copynet_pipeline.jsonnet -s ./temp/bidaf_copynet_pipeline --include-package orca    
 python evaluate.py ./temp/bidaf_copynet_pipeline/model.tar.gz bcp
 ```
+
+## Data Generation
+
+Use `create_new_dataset.py` to create the `ShARC-Augmented` dataset. More details can be found in section 4.1 of the [paper](https://arxiv.org/abs/1909.03759).
+
+## Heuristic Baselines
+
+The rule-based heuristic baseline can be found in `rule.ipynb`. More details can be found in section 4.3 of the [paper](https://arxiv.org/abs/1909.03759).
